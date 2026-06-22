@@ -48,47 +48,53 @@ if f_country:
 view = df[mask].copy()
 
 # ---- Tabs ----
-tabs = st.tabs(["📅 Calendar", "🔥 Heatmap", "📊 Gantt", "📍 Location",
-                "📈 Dashboard", "➕ Submit", "📤 Mass Upload"])
+tab_calendar, tab_heatmap, tab_gantt, tab_location, tab_dashboard, tab_submit, tab_upload = st.tabs(
+    ["📅 Calendar", "🔥 Heatmap", "📊 Gantt", "📍 Location",
+     "📈 Dashboard", "➕ Submit", "📤 Mass Upload"]
+)
 
-# Calendar
-with tabsst.subheader("Calendar")
+# ---------- Calendar ----------
+with tab_calendar:
+    st.subheader("Calendar")
     st.caption(f"{len(view)} activities · {view['Location'].str.split(', ').str[-1].nunique()} countries")
     st.dataframe(
-        view[["StartDate","EndDate","Type","Title","Location",
-              "Initiating Function","Initiating Sub-Function",
-              "Attendee Category","Participating Function","Internal/External","Note"]],
+        view[["StartDate", "EndDate", "Type", "Title", "Location",
+              "Initiating Function", "Initiating Sub-Function",
+              "Attendee Category", "Participating Function", "Internal/External", "Note"]],
         use_container_width=True, hide_index=True
     )
 
-# Heatmap
-with tabsst.subheader("Heatmap · weekly pressure by function")
+# ---------- Heatmap ----------
+with tab_heatmap:
+    st.subheader("Heatmap · weekly pressure by function")
     if view.empty:
         st.info("No activities match your filters.")
     else:
         view["Week"] = view["StartDate"].dt.to_period("W").apply(lambda p: p.start_time)
-        heat = view.groupby(["Week","Initiating Function"]).size().reset_index(name="Count")
+        heat = view.groupby(["Week", "Initiating Function"]).size().reset_index(name="Count")
         pivot = heat.pivot(index="Week", columns="Initiating Function", values="Count").fillna(0)
         fig = px.imshow(pivot.T, color_continuous_scale="Oranges",
                         labels=dict(x="Week", y="Function", color="Activities"),
                         aspect="auto")
-        fig.update_layout(height=400, margin=dict(l=20,r=20,t=30,b=20))
+        fig.update_layout(height=400, margin=dict(l=20, r=20, t=30, b=20))
         st.plotly_chart(fig, use_container_width=True)
         st.caption(f"Comfort thresholds — Elevated ≥ {THRESHOLD_ELEVATED}, Critical ≥ {THRESHOLD_CRITICAL}")
 
-# Gantt
-with tabsst.subheader("Gantt")
+# ---------- Gantt ----------
+with tab_gantt:
+    st.subheader("Gantt")
     if view.empty:
         st.info("No activities match your filters.")
     else:
         fig = px.timeline(view, x_start="StartDate", x_end="EndDate", y="Title",
-                          color="Initiating Function", hover_data=["Location","Type","Note"])
+                          color="Initiating Function", hover_data=["Location", "Type", "Note"])
         fig.update_yaxes(autorange="reversed")
-        fig.update_layout(height=600, margin=dict(l=20,r=20,t=30,b=20))
+        fig.update_layout(height=600, margin=dict(l=20, r=20, t=30, b=20))
         st.plotly_chart(fig, use_container_width=True)
 
-# Location
-with tabsst.subheader("Activities by country")
+# ---------- Location ----------
+with tab_location:
+    st.subheader("Activities by country")
     if view.empty:
         st.info("No activities match your filters.")
     else:
@@ -97,26 +103,28 @@ with tabsst.subheader("Activities by country")
                         .sort_values("Activities", ascending=True)
         fig = px.bar(by_country, x="Activities", y="Country", orientation="h",
                      color_discrete_sequence=[FOUNDATION_ORANGE])
-        fig.update_layout(height=500, margin=dict(l=20,r=20,t=30,b=20))
+        fig.update_layout(height=500, margin=dict(l=20, r=20, t=30, b=20))
         st.plotly_chart(fig, use_container_width=True)
 
-# Dashboard
-with tabsst.subheader("Executive Dashboard")
+# ---------- Dashboard ----------
+with tab_dashboard:
+    st.subheader("Executive Dashboard")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total activities", len(view))
-    c2.metric("Approved", int((view["Status"]=="Approved").sum()))
-    c3.metric("Pending", int((view["Status"]=="Pending").sum()))
+    c2.metric("Approved", int((view["Status"] == "Approved").sum()))
+    c3.metric("Pending", int((view["Status"] == "Pending").sum()))
     c4.metric("Countries", view["Location"].str.split(", ").str[-1].nunique())
 
     st.markdown("#### When is the Foundation busiest?")
     if not view.empty:
         view["Month"] = view["StartDate"].dt.to_period("M").astype(str)
-        by_month = view.groupby(["Month","Type"]).size().reset_index(name="Count")
+        by_month = view.groupby(["Month", "Type"]).size().reset_index(name="Count")
         fig = px.bar(by_month, x="Month", y="Count", color="Type", barmode="stack")
         st.plotly_chart(fig, use_container_width=True)
 
-# Submit
-with tabsst.subheader("Submit a new activity")
+# ---------- Submit ----------
+with tab_submit:
+    st.subheader("Submit a new activity")
     with st.form("submit", clear_on_submit=True):
         col1, col2 = st.columns(2)
         title    = col1.text_input("Activity name")
@@ -145,8 +153,9 @@ with tabsst.subheader("Submit a new activity")
                 [st.session_state.activities, new], ignore_index=True)
             st.success(f"✅ '{title}' submitted as Pending.")
 
-# Mass Upload
-with tabsst.subheader("Mass upload")
+# ---------- Mass Upload ----------
+with tab_upload:
+    st.subheader("Mass upload")
     st.write("Upload an Excel file matching the template. Rows are validated against project lookups.")
     upload = st.file_uploader("Choose Excel file", type=["xlsx"])
     if upload:
