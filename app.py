@@ -1,5 +1,5 @@
 # ============================================================
-#  Activity Calendar - Streamlit App - v0.5
+#  Activity Calendar - Streamlit App - v0.6 (final)
 #  Mastercard Foundation - Enterprise Planning
 # ============================================================
 
@@ -18,6 +18,7 @@ from lookups import (TYPES, FUNCTIONS, SUB_FUNCTIONS, ATTENDEE_CATEGORIES,
 from explainers import KPI_EXPLAINERS, CHART_EXPLAINERS, chart_explainer_markdown
 from countries import flag
 from settings_store import init_settings, get_thresholds, log_change
+from exports import build_pptx, build_excel_export, build_template_excel
 
 # ============================================================
 #  Page setup + Foundation theme
@@ -25,18 +26,41 @@ from settings_store import init_settings, get_thresholds, log_change
 st.set_page_config(page_title="Activity Calendar", page_icon="📅", layout="wide")
 init_settings()
 
+# ============================================================
+#  Optional access gate (shared password)
+#  To disable: set ENABLE_LOGIN = False below
+# ============================================================
+ENABLE_LOGIN = True
+SHARED_PASSWORD = "foundation2026"   # change this to whatever you want to share
+
+if ENABLE_LOGIN:
+    if "auth_ok" not in st.session_state:
+        st.session_state.auth_ok = False
+    if not st.session_state.auth_ok:
+        st.markdown(f"<h1 style='color:{FOUNDATION_ORANGE};'>Activity Calendar</h1>", unsafe_allow_html=True)
+        st.markdown("Mastercard Foundation · Enterprise Planning")
+        st.write("")
+        pw = st.text_input("Enter access password", type="password")
+        if st.button("Sign in", type="primary"):
+            if pw == SHARED_PASSWORD:
+                st.session_state.auth_ok = True
+                st.rerun()
+            else:
+                st.error("Incorrect password.")
+        st.caption("Contact Radintshi Monyobo for access.")
+        st.stop()
+
+# ============================================================
+#  Foundation theme
+# ============================================================
 st.markdown(f"""
 <style>
     .stApp {{ background-color: {FOUNDATION_BG}; }}
     h1, h2, h3 {{ color: {FOUNDATION_TEXT}; }}
     .insight-strip {{
-        background: #FFF4E6;
-        border-left: 4px solid {FOUNDATION_ORANGE};
-        padding: 10px 16px;
-        margin: 8px 0 20px 0;
-        font-style: italic;
-        color: #555;
-        border-radius: 4px;
+        background: #FFF4E6; border-left: 4px solid {FOUNDATION_ORANGE};
+        padding: 10px 16px; margin: 8px 0 20px 0; font-style: italic;
+        color: #555; border-radius: 4px;
     }}
     div[data-baseweb="tag"] {{ background-color: {FOUNDATION_ORANGE} !important; }}
     .detail-card {{
@@ -127,7 +151,6 @@ def load_data(file_mtime):
 file_mtime = os.path.getmtime("activities.xlsx")
 if "activities" not in st.session_state:
     st.session_state.activities = load_data(file_mtime)
-
 df = st.session_state.activities
 
 # ============================================================
@@ -152,7 +175,11 @@ with st.sidebar:
                             min_value=min_d, max_value=max_d)
 
     st.markdown("---")
-    st.caption(f"v0.5 - {len(df)} activities loaded - {df['Country'].nunique()} countries")
+    st.caption(f"v0.6 - {len(df)} activities loaded - {df['Country'].nunique()} countries")
+    if ENABLE_LOGIN:
+        if st.button("Sign out"):
+            st.session_state.auth_ok = False
+            st.rerun()
 
 # ============================================================
 #  Apply filters
@@ -175,7 +202,7 @@ if isinstance(f_dates, tuple) and len(f_dates) == 2:
 view = df[mask].copy()
 
 # ============================================================
-#  Tabs (Executive = exec-brief-first; Analyst = working tools first)
+#  Tabs
 # ============================================================
 if view_mode == "Executive":
     (tab_brief, tab_dashboard, tab_calendar, tab_heatmap, tab_gantt,
@@ -190,13 +217,10 @@ else:
          "📋 Exec Brief", "✅ Approvals", "➕ Submit", "📤 Mass Upload", "⚙️ Settings"]
     )
 
-# ============================================================
-#  Get current enterprise thresholds (may have been updated in Settings)
-# ============================================================
 ENT_ELEV, ENT_CRIT = get_thresholds()
 
 # ============================================================
-#  Tab: Exec Brief
+#  Tab: Exec Brief (with PPTX + Excel export)
 # ============================================================
 with tab_brief:
     try:
@@ -206,6 +230,9 @@ with tab_brief:
         high_w   = int((view["Weighting"] == "High").sum())
         countries = view["Country"].nunique()
 
+        narrative = ""
+        top_func = "-"
+        top_country = "-"
         if total > 0:
             top_func = view["Initiating Function"].value_counts().idxmax()
             top_func_n = int(view["Initiating Function"].value_counts().max())
@@ -213,22 +240,28 @@ with tab_brief:
             top_country = view["Country"].value_counts().idxmax()
             top_country_n = int(view["Country"].value_counts().max())
             high_pct = (view["Weighting"] == "High").mean() * 100
-            narrative = (
-                f"As of {date.today().strftime('%d %B %Y')}, the Foundation has <strong>{total} activities</strong> "
-                f"planned across <strong>{countries} countries</strong>. {approved} are approved "
-                f"({approved/total*100:.0f}%), {pending} pending review. <strong>{top_func}</strong> is "
-                f"hosting the most work ({top_func_n} activities), and <strong>{flag(top_country)} {top_country}</strong> "
+            narrative_plain = (
+                f"As of {date.today().strftime('%d %B %Y')}, the Foundation has {total} activities "
+                f"planned across {countries} countries. {approved} are approved "
+                f"({approved/total*100:.0f}%), {pending} pending review. {top_func} is "
+                f"hosting the most work ({top_func_n} activities), and {top_country} "
                 f"leads activity volume ({top_country_n}). {high_pct:.0f}% of work is High weighting. "
-                f"Peak month: <strong>{peak_month}</strong>."
+                f"Peak month: {peak_month}."
             )
+            narrative_html = narrative_plain.replace(top_func, f"<strong>{top_func}</strong>")\
+                                            .replace(top_country, f"<strong>{flag(top_country)} {top_country}</strong>")\
+                                            .replace(peak_month, f"<strong>{peak_month}</strong>")\
+                                            .replace(f"{total} activities", f"<strong>{total} activities</strong>")\
+                                            .replace(f"{countries} countries", f"<strong>{countries} countries</strong>")
         else:
-            narrative = "No activities match the current filters. Adjust filters to see a brief."
+            narrative_plain = "No activities match the current filters."
+            narrative_html = narrative_plain
 
         st.markdown(f"""
 <div class='exec-hero'>
 <p style='color:#888; font-size:12px; margin:0 0 4px 0;'>EXECUTIVE BRIEF · {date.today().strftime('%d %B %Y')}</p>
 <h2>What you need to know</h2>
-<p>{narrative}</p>
+<p>{narrative_html}</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -240,16 +273,15 @@ with tab_brief:
         kpi_with_tooltip(c4, "High weighting", high_w)
         kpi_with_tooltip(c5, "Countries", countries)
 
+        # Busiest months chart
         if not view.empty:
-            # Top chart - busiest months
             chart_title_with_explainer("busiest", "####")
             v = view.copy()
             v["Month"] = v["StartDate"].dt.to_period("M").astype(str)
             by_month = v.groupby(["Month", "Type"]).size().reset_index(name="Count")
             fig = px.bar(by_month, x="Month", y="Count", color="Type", barmode="stack",
                          color_discrete_map=TYPE_COLORS)
-            fig.update_layout(plot_bgcolor="white", height=340,
-                              margin=dict(l=20, r=20, t=20, b=20))
+            fig.update_layout(plot_bgcolor="white", height=340, margin=dict(l=20, r=20, t=20, b=20))
             st.plotly_chart(fig, use_container_width=True)
 
             # Functions needing attention
@@ -263,16 +295,54 @@ with tab_brief:
                 peak = int(pivot[func].max())
                 elev, crit = get_thresholds(func)
                 if peak >= crit:
-                    attention.append((func, peak, "🔴 Critical", elev, crit))
+                    attention.append([func, peak, "🔴 Critical", elev, crit])
                 elif peak >= elev:
-                    attention.append((func, peak, "🟠 Elevated", elev, crit))
-            if attention:
-                att_df = pd.DataFrame(attention, columns=["Function", "Peak week", "Status", "Elevated threshold", "Critical threshold"])
-                st.dataframe(att_df, use_container_width=True, hide_index=True)
-            else:
+                    attention.append([func, peak, "🟠 Elevated", elev, crit])
+            attention_df = pd.DataFrame(attention,
+                                        columns=["Function", "Peak week", "Status", "Elevated", "Critical"])
+            if attention_df.empty:
                 st.success("✅ All functions are within comfort thresholds. No immediate action needed.")
+            else:
+                st.dataframe(attention_df, use_container_width=True, hide_index=True)
 
-            st.caption("Tip: Use browser print (Ctrl+P) for a clean A4 brief.")
+            # Exports section
+            st.markdown("#### 📤 Export")
+            ex1, ex2, ex3 = st.columns(3)
+
+            # PPTX
+            kpis_for_pptx = [
+                ("Total activities", total),
+                ("Approved", f"{approved} ({approved/max(total,1)*100:.0f}%)"),
+                ("Pending", f"{pending} ({pending/max(total,1)*100:.0f}%)"),
+                ("High weighting", high_w),
+                ("Countries", countries),
+            ]
+            pptx_buf = build_pptx(narrative_plain, kpis_for_pptx, attention_df, top_func, top_country)
+            ex1.download_button(
+                "🎨 Download PowerPoint",
+                data=pptx_buf,
+                file_name=f"Activity_Calendar_ExecBrief_{date.today().isoformat()}.pptx",
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                use_container_width=True,
+            )
+
+            # Excel of current view
+            excel_buf = build_excel_export(view[[
+                "StartDate", "EndDate", "Type", "Title", "Country",
+                "Initiating Function", "Initiating Sub-Function",
+                "Attendee Category", "Participating Function",
+                "Internal/External", "Status", "Weighting", "Note"
+            ]])
+            ex2.download_button(
+                "📊 Download Excel (current view)",
+                data=excel_buf,
+                file_name=f"Activity_Calendar_{date.today().isoformat()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+            # PDF tip (use browser print)
+            ex3.caption("📄 For PDF: press Ctrl+P → Save as PDF (sidebar auto-hidden).")
     except Exception as e:
         st.error(f"Exec Brief could not render: {e}")
 
@@ -333,7 +403,7 @@ with tab_dashboard:
         st.error(f"Dashboard could not render: {e}")
 
 # ============================================================
-#  Tab: Calendar (Month / Week / List)
+#  Tab: Calendar
 # ============================================================
 with tab_calendar:
     chart_title_with_explainer("calendar", "###")
@@ -347,24 +417,16 @@ with tab_calendar:
                 months = sorted(view["StartDate"].dt.to_period("M").unique())
                 month_labels = {m: m.strftime("%B %Y") for m in months}
                 pick_m = st.selectbox("Month", months, format_func=lambda m: month_labels[m], key="cal_month")
-
                 year, month = pick_m.year, pick_m.month
                 first_weekday, days_in_month = cal.monthrange(year, month)
                 today = date.today()
-                month_acts = view[
-                    (view["StartDate"].dt.year == year) & (view["StartDate"].dt.month == month)
-                ].copy()
-
-                insight(f"{len(month_acts)} activities in {month_labels[pick_m]}. "
-                        f"{month_acts['Country'].nunique()} countries.")
+                month_acts = view[(view["StartDate"].dt.year == year) & (view["StartDate"].dt.month == month)].copy()
+                insight(f"{len(month_acts)} activities in {month_labels[pick_m]}. {month_acts['Country'].nunique()} countries.")
 
                 dow_cols = st.columns(7)
                 for i, dname in enumerate(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
                     dow_cols[i].markdown(f"**{dname}**")
-
-                pad = first_weekday
-                day = 1
-                done = False
+                pad = first_weekday; day = 1; done = False
                 while not done:
                     week_cols = st.columns(7)
                     for i in range(7):
@@ -388,8 +450,7 @@ with tab_calendar:
                             day += 1
                         else:
                             week_cols[i].markdown("<div class='cal-cell cal-outside'></div>", unsafe_allow_html=True)
-                    if day > days_in_month:
-                        done = True
+                    if day > days_in_month: done = True
 
                 st.markdown("##### Legend")
                 legend_html = ""
@@ -407,7 +468,6 @@ with tab_calendar:
                     & (view["StartDate"].dt.date <= start_of_week + timedelta(days=6))
                 ]
                 insight(f"{len(week_acts)} activities in {week_labels[pick_w]}.")
-
                 day_cols = st.columns(7)
                 for i in range(7):
                     d = start_of_week + timedelta(days=i)
@@ -431,13 +491,18 @@ with tab_calendar:
                                 "Internal/External", "Status", "Weighting", "Note"]].reset_index(drop=True)
                 st.dataframe(display, use_container_width=True, hide_index=True)
 
+                # Export this view
+                excel_buf = build_excel_export(display)
+                st.download_button("📊 Download Excel (filtered view)", data=excel_buf,
+                                   file_name=f"Activity_Calendar_{date.today().isoformat()}.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
                 st.markdown("##### 🔍 Activity drill-down")
                 options = view.assign(
                     _label=view["Title"].astype(str) + " - " + view["Country"].astype(str)
                             + " - " + view["StartDate"].dt.strftime("%b %d, %Y")
                 )["_label"].tolist()
                 pick = st.selectbox("Pick an activity to see full details", options=[""] + options)
-
                 if pick:
                     row = view.assign(
                         _label=view["Title"].astype(str) + " - " + view["Country"].astype(str)
@@ -475,7 +540,7 @@ with tab_calendar:
         st.error(f"Calendar could not render: {e}")
 
 # ============================================================
-#  Tab: Heatmap (uses per-function thresholds from Settings)
+#  Tab: Heatmap
 # ============================================================
 with tab_heatmap:
     chart_title_with_explainer("pressure", "###")
@@ -487,17 +552,12 @@ with tab_heatmap:
             v["Week"] = v["StartDate"].dt.to_period("W").apply(lambda p: p.start_time)
             heat = v.groupby(["Week", "Initiating Function"]).size().reset_index(name="Count")
             pivot = heat.pivot(index="Week", columns="Initiating Function", values="Count").fillna(0)
-
-            # Flag pressure using each function's own threshold
-            critical_hits = []
-            elevated_hits = []
+            critical_hits = []; elevated_hits = []
             for func in pivot.columns:
                 elev, crit = get_thresholds(func)
                 peak = int(pivot[func].max())
-                if peak >= crit:
-                    critical_hits.append((func, peak, crit))
-                elif peak >= elev:
-                    elevated_hits.append((func, peak, elev))
+                if peak >= crit: critical_hits.append((func, peak, crit))
+                elif peak >= elev: elevated_hits.append((func, peak, elev))
 
             if critical_hits:
                 insight(f"⚠️ Critical pressure: {len(critical_hits)} function(s) above their Critical thresholds. Action needed.")
@@ -507,19 +567,16 @@ with tab_heatmap:
                 insight(f"Workload is balanced - all functions within their comfort thresholds.")
 
             fig = px.imshow(pivot.T, color_continuous_scale="Oranges",
-                            labels=dict(x="Week", y="Function", color="Activities"),
-                            aspect="auto")
+                            labels=dict(x="Week", y="Function", color="Activities"), aspect="auto")
             fig.update_layout(height=420, margin=dict(l=20, r=20, t=20, b=20), plot_bgcolor="white")
             st.plotly_chart(fig, use_container_width=True)
             st.caption(f"Enterprise default thresholds - Elevated >= {ENT_ELEV}, Critical >= {ENT_CRIT}. Per-function overrides applied where set in Settings.")
 
-            # Row totals
             st.markdown("##### Functions needing attention")
             rows = []
             for func in pivot.columns:
                 elev, crit = get_thresholds(func)
-                total = int(pivot[func].sum())
-                peak = int(pivot[func].max())
+                total = int(pivot[func].sum()); peak = int(pivot[func].max())
                 if peak >= crit: status = "🔴 Critical"
                 elif peak >= elev: status = "🟠 Elevated"
                 else: status = "🟢 Balanced"
@@ -530,7 +587,6 @@ with tab_heatmap:
             func_totals = func_totals.sort_values("Peak week", ascending=False)
             st.dataframe(func_totals, use_container_width=True, hide_index=True)
 
-            # Column totals
             st.markdown("##### Busiest weeks")
             week_totals = pivot.sum(axis=1).reset_index()
             week_totals.columns = ["Week", "Total"]
@@ -538,7 +594,6 @@ with tab_heatmap:
             week_totals["Week"] = pd.to_datetime(week_totals["Week"]).dt.strftime("Week of %b %d, %Y")
             st.dataframe(week_totals, use_container_width=True, hide_index=True)
 
-            # Drill-down
             st.markdown("##### 🔍 Pressure point drill-down")
             d1, d2 = st.columns(2)
             with d1:
@@ -572,9 +627,9 @@ with tab_gantt:
             g["Label"] = (g["Title"].astype(str) + " - " + g["Country"].astype(str)
                           + " - " + g["StartDate"].dt.strftime("%b %d"))
             if len(view) > MAX_ROWS:
-                insight(f"Showing the first {MAX_ROWS} of {len(view)} activities (sorted by date). Use filters to narrow further.")
+                insight(f"Showing the first {MAX_ROWS} of {len(view)} activities (sorted by date).")
             else:
-                insight(f"Showing {len(g)} activities across {(g['EndDate'].max() - g['StartDate'].min()).days} days. Hover for details.")
+                insight(f"Showing {len(g)} activities across {(g['EndDate'].max() - g['StartDate'].min()).days} days.")
             fig = px.timeline(g, x_start="StartDate", x_end="EndDate", y="Label",
                               color="Initiating Function", color_discrete_map=FUNCTION_COLORS,
                               hover_data=["Country", "Type", "Weighting", "Status", "Note"])
@@ -619,7 +674,6 @@ with tab_location:
             by_country = (view.groupby("Country").size().reset_index(name="Current")
                              .sort_values("Current", ascending=True))
             by_country["Country with flag"] = by_country["Country"].apply(lambda c: f"{flag(c)} {c}")
-
             if comparison:
                 if isinstance(f_dates, tuple) and len(f_dates) == 2:
                     cur_start, cur_end = f_dates
@@ -646,7 +700,7 @@ with tab_location:
         st.error(f"Location could not render: {e}")
 
 # ============================================================
-#  Tab: Approvals queue
+#  Tab: Approvals
 # ============================================================
 with tab_approvals:
     st.subheader("✅ Approvals queue")
@@ -724,70 +778,97 @@ with tab_submit:
         st.error(f"Submit form could not render: {e}")
 
 # ============================================================
-#  Tab: Mass Upload
+#  Tab: Mass Upload (with template + improved validation)
 # ============================================================
 with tab_upload:
     st.subheader("Mass upload")
     try:
-        st.write("Upload an Excel file matching the template. Rows are validated against project lookups.")
+        c1, c2 = st.columns([3, 1])
+        c1.write("Upload an Excel file matching the template. Rows are validated against project lookups.")
+
+        # Download template
+        template_buf = build_template_excel()
+        c2.download_button(
+            "📥 Download template",
+            data=template_buf,
+            file_name="Activity_Calendar_Template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+
         upload = st.file_uploader("Choose Excel file", type=["xlsx"])
         if upload:
             new_df = pd.read_excel(upload, sheet_name="Activities", header=1)
             valid, errors = [], []
             for i, row in new_df.iterrows():
+                row_errors = []
                 if row["Type"] not in TYPES:
-                    errors.append(f"Row {i+3}: invalid Type '{row['Type']}'")
-                elif row["Initiating Function"] not in FUNCTIONS:
-                    errors.append(f"Row {i+3}: invalid Function '{row['Initiating Function']}'")
+                    row_errors.append(f"Invalid Type '{row['Type']}'")
+                if row["Initiating Function"] not in FUNCTIONS:
+                    row_errors.append(f"Invalid Function '{row['Initiating Function']}'")
                 elif row["Initiating Sub-Function"] not in SUB_FUNCTIONS.get(row["Initiating Function"], []):
-                    errors.append(f"Row {i+3}: '{row['Initiating Sub-Function']}' not allowed under {row['Initiating Function']}")
+                    row_errors.append(f"Sub-Function '{row['Initiating Sub-Function']}' not allowed under {row['Initiating Function']}")
+                if pd.isna(row.get("StartDate")) or pd.isna(row.get("EndDate")):
+                    row_errors.append("Missing StartDate or EndDate")
+                elif pd.to_datetime(row["EndDate"]) < pd.to_datetime(row["StartDate"]):
+                    row_errors.append("EndDate is before StartDate")
+                if row_errors:
+                    errors.append({"Row": i + 3, "Title": row.get("Title", ""), "Errors": "; ".join(row_errors)})
                 else:
                     valid.append(row)
+
             if errors:
-                st.error(f"Parsed {len(new_df)} rows: {len(valid)} valid, {len(errors)} with errors.")
-                with st.expander("See errors"):
-                    for e in errors:
-                        st.write("• " + e)
+                st.error(f"📋 Parsed {len(new_df)} rows: ✅ {len(valid)} valid · ❌ {len(errors)} with errors.")
+                err_df = pd.DataFrame(errors)
+                with st.expander(f"See {len(errors)} error(s) line-by-line", expanded=True):
+                    st.dataframe(err_df, use_container_width=True, hide_index=True)
+                if valid:
+                    st.info(f"You can still load the {len(valid)} valid rows. Errors will be skipped.")
+                    if st.button(f"Load {len(valid)} valid rows only"):
+                        v_df = pd.DataFrame(valid)
+                        v_df["Country"] = v_df["Location"].astype(str).str.split(", ").str[-1].str.strip()
+                        v_df["Region"] = v_df["Country"].map(COUNTRY_TO_REGION).fillna("Other")
+                        if "Status" not in v_df.columns: v_df["Status"] = "Pending"
+                        if "Weighting" not in v_df.columns: v_df["Weighting"] = "Medium"
+                        st.session_state.activities = pd.concat([st.session_state.activities, v_df], ignore_index=True)
+                        log_change("Mass upload (partial)", f"Loaded {len(valid)} valid activities, skipped {len(errors)}")
+                        st.success(f"Loaded {len(valid)} valid activities.")
+                        st.rerun()
             else:
                 st.success(f"✅ All {len(new_df)} rows valid.")
-                if st.button("Load into calendar"):
+                if st.button(f"Load {len(new_df)} activities into calendar"):
                     new_df["Country"] = new_df["Location"].astype(str).str.split(", ").str[-1].str.strip()
                     new_df["Region"] = new_df["Country"].map(COUNTRY_TO_REGION).fillna("Other")
-                    if "Status" not in new_df.columns:
-                        new_df["Status"] = "Pending"
-                    if "Weighting" not in new_df.columns:
-                        new_df["Weighting"] = "Medium"
-                    st.session_state.activities = pd.concat(
-                        [st.session_state.activities, new_df], ignore_index=True)
+                    if "Status" not in new_df.columns: new_df["Status"] = "Pending"
+                    if "Weighting" not in new_df.columns: new_df["Weighting"] = "Medium"
+                    st.session_state.activities = pd.concat([st.session_state.activities, new_df], ignore_index=True)
                     log_change("Mass upload", f"Loaded {len(new_df)} activities")
                     st.success(f"Loaded {len(new_df)} activities into the calendar.")
+                    st.rerun()
     except Exception as e:
         st.error(f"Mass Upload could not render: {e}")
 
 # ============================================================
-#  Tab: Settings (Thresholds + Audit log)
+#  Tab: Settings
 # ============================================================
 with tab_settings:
     st.subheader("⚙️ Workload comfort thresholds")
     try:
-        st.write("Set the activity volume per week at which a function is considered stretched (Elevated) or overloaded (Critical). "
-                 "These drive the Heatmap RAG colours and the Exec Brief alerts.")
+        st.write("Set the activity volume per week at which a function is considered stretched (Elevated) or overloaded (Critical).")
 
         with st.expander("How are defaults set?"):
             st.markdown(
                 "- **Elevated** is an early-warning level - above this, teams typically feel stretched.\n"
                 "- **Critical** is an overload level - above this, quality and decision-making suffer.\n"
-                "- Defaults are based on average team capacity. Function leads can override per function below."
+                "- Function leads can override per function below."
             )
 
-        # Enterprise defaults
         st.markdown("##### Enterprise defaults")
         c1, c2, c3 = st.columns([1, 1, 1])
         new_elev = c1.number_input("Elevated (amber)", min_value=1, max_value=50,
                                    value=int(st.session_state.enterprise_elevated), key="ent_elev")
         new_crit = c2.number_input("Critical (red)", min_value=1, max_value=50,
                                    value=int(st.session_state.enterprise_critical), key="ent_crit")
-
         if c3.button("Save enterprise defaults", type="primary"):
             if new_crit <= new_elev:
                 st.error("Critical must be greater than Elevated.")
@@ -799,29 +880,25 @@ with tab_settings:
                 st.success("✅ Enterprise defaults updated.")
                 st.rerun()
 
-        # Per-function overrides
         st.markdown("##### Per-function overrides")
         st.caption("Leave a value blank to inherit the enterprise default.")
-
         for func in FUNCTIONS:
             cur = st.session_state.function_thresholds.get(func, {"elevated": None, "critical": None, "note": ""})
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns([2, 1, 1, 3])
                 c1.markdown(f"**{func}**")
-                ev = c2.text_input(f"Elevated", value="" if cur["elevated"] is None else str(cur["elevated"]),
-                                   key=f"ev_{func}", label_visibility="collapsed", placeholder=f"default {st.session_state.enterprise_elevated}")
-                cv = c3.text_input(f"Critical", value="" if cur["critical"] is None else str(cur["critical"]),
-                                   key=f"cv_{func}", label_visibility="collapsed", placeholder=f"default {st.session_state.enterprise_critical}")
-                note = c4.text_input(f"Note", value=cur.get("note", ""), key=f"nt_{func}",
-                                     label_visibility="collapsed", placeholder="Optional note (e.g., lower during Q4 close)")
-
+                ev = c2.text_input("Elevated", value="" if cur["elevated"] is None else str(cur["elevated"]),
+                                   key=f"ev_{func}", label_visibility="collapsed",
+                                   placeholder=f"default {st.session_state.enterprise_elevated}")
+                cv = c3.text_input("Critical", value="" if cur["critical"] is None else str(cur["critical"]),
+                                   key=f"cv_{func}", label_visibility="collapsed",
+                                   placeholder=f"default {st.session_state.enterprise_critical}")
+                note = c4.text_input("Note", value=cur.get("note", ""), key=f"nt_{func}",
+                                     label_visibility="collapsed", placeholder="Optional note")
                 def parse_int(x):
                     try: return int(x) if str(x).strip() else None
                     except: return None
-
-                new_ev = parse_int(ev)
-                new_cv = parse_int(cv)
-
+                new_ev = parse_int(ev); new_cv = parse_int(cv)
                 if (new_ev != cur["elevated"]) or (new_cv != cur["critical"]) or (note != cur.get("note", "")):
                     if c4.button(f"Save {func}", key=f"save_{func}"):
                         if new_ev is not None and new_cv is not None and new_cv <= new_ev:
@@ -830,11 +907,10 @@ with tab_settings:
                             st.session_state.function_thresholds[func] = {
                                 "elevated": new_ev, "critical": new_cv, "note": note
                             }
-                            log_change(f"Threshold updated", f"{func}: Elevated={new_ev}, Critical={new_cv}, Note='{note}'")
+                            log_change("Threshold updated", f"{func}: Elevated={new_ev}, Critical={new_cv}, Note='{note}'")
                             st.success(f"✅ {func} thresholds updated.")
                             st.rerun()
 
-        # Audit log
         st.markdown("##### Audit log")
         if not st.session_state.audit_log:
             st.caption("No changes recorded yet.")
