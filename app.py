@@ -20,17 +20,24 @@ st.markdown(
 )
 
 # ---- Load data ----
+import os
+
 @st.cache_data
-def load_data():
+def load_data(file_mtime):
     df = pd.read_excel("activities.xlsx", sheet_name="Activities", header=1)
     df["StartDate"] = pd.to_datetime(df["StartDate"])
     df["EndDate"]   = pd.to_datetime(df["EndDate"])
-    df["Status"]    = "Approved"
-    df["Weighting"] = "Medium"
+    if "Status" not in df.columns:
+        df["Status"] = "Approved"
+    if "Weighting" not in df.columns:
+        df["Weighting"] = "Medium"
     return df
 
+# Pass the file's modification time so the cache invalidates when the file changes
+file_mtime = os.path.getmtime("activities.xlsx")
+
 if "activities" not in st.session_state:
-    st.session_state.activities = load_data()
+    st.session_state.activities = load_data(file_mtime)
 
 df = st.session_state.activities
 
