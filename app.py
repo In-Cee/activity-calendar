@@ -1,12 +1,14 @@
 # ============================================================
-#  Activity Calendar - Streamlit App - v0.3
+#  Activity Calendar - Streamlit App - v0.4
 #  Mastercard Foundation - Enterprise Planning
 # ============================================================
 
 import os
+import calendar as cal
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from datetime import date, timedelta
 from lookups import (TYPES, FUNCTIONS, SUB_FUNCTIONS, ATTENDEE_CATEGORIES,
                      DELIVERY_MODE, STATUS, WEIGHTING,
                      THRESHOLD_ELEVATED, THRESHOLD_CRITICAL,
@@ -14,6 +16,7 @@ from lookups import (TYPES, FUNCTIONS, SUB_FUNCTIONS, ATTENDEE_CATEGORIES,
                      FOUNDATION_AMBER, FOUNDATION_RED, FOUNDATION_GREEN,
                      TYPE_COLORS, FUNCTION_COLORS, COUNTRY_TO_REGION)
 from explainers import KPI_EXPLAINERS, CHART_EXPLAINERS, chart_explainer_markdown
+from countries import flag
 
 # ============================================================
 #  Page setup + Foundation theme
@@ -41,6 +44,33 @@ st.markdown(f"""
         border-radius: 6px;
         margin: 8px 0;
     }}
+    .region-chip {{
+        display: inline-block;
+        background: white;
+        border: 1px solid #E0E0E0;
+        border-left: 4px solid {FOUNDATION_ORANGE};
+        padding: 10px 16px;
+        margin: 4px 8px 4px 0;
+        border-radius: 4px;
+        font-size: 14px;
+    }}
+    .cal-cell {{
+        background: white;
+        border: 1px solid #E8E8E8;
+        border-radius: 4px;
+        padding: 6px;
+        min-height: 90px;
+        font-size: 11px;
+    }}
+    .cal-day-num {{ font-weight: bold; color: {FOUNDATION_TEXT}; font-size: 12px; }}
+    .cal-today {{ background: #FFF4E6; border: 2px solid {FOUNDATION_ORANGE}; }}
+    .cal-weekend {{ background: #F5F5F0; }}
+    .cal-outside {{ background: #FAFAFA; opacity: 0.5; }}
+    .cal-activity {{
+        display: block; margin-top: 2px; padding: 2px 4px;
+        border-radius: 3px; font-size: 10px; color: white;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -58,14 +88,12 @@ with col_toggle:
                          horizontal=True, label_visibility="collapsed")
 
 # ============================================================
-#  Helper functions
+#  Helpers
 # ============================================================
 def insight(text):
-    """Render an italic orange-bordered insight strip."""
     st.markdown(f"<div class='insight-strip'>💡 {text}</div>", unsafe_allow_html=True)
 
 def chart_title_with_explainer(key, level="###"):
-    """Render a chart title with an ⓘ explainer popover next to it."""
     e = CHART_EXPLAINERS.get(key, {})
     title = e.get("title", key)
     col_t, col_i = st.columns([20, 1])
@@ -76,7 +104,6 @@ def chart_title_with_explainer(key, level="###"):
             st.markdown(chart_explainer_markdown(key))
 
 def kpi_with_tooltip(col, label, value, delta=None):
-    """Render a KPI metric with an info tooltip."""
     help_text = KPI_EXPLAINERS.get(label, "")
     col.metric(label, value, delta, help=help_text)
 
@@ -96,7 +123,6 @@ def load_data(file_mtime):
 
     df["Country"] = df["Location"].astype(str).str.split(", ").str[-1].str.strip()
     df["Region"]  = df["Country"].map(COUNTRY_TO_REGION).fillna("Other")
-
     return df
 
 file_mtime = os.path.getmtime("activities.xlsx")
@@ -110,7 +136,6 @@ df = st.session_state.activities
 # ============================================================
 with st.sidebar:
     st.markdown("### 🔍 Filters")
-
     f_type = st.multiselect("Type", TYPES, default=TYPES)
     f_hosting = st.multiselect("Hosting function", FUNCTIONS, default=FUNCTIONS)
     f_participating = st.multiselect(
@@ -128,7 +153,7 @@ with st.sidebar:
                             min_value=min_d, max_value=max_d)
 
     st.markdown("---")
-    st.caption(f"v0.3 - {len(df)} activities loaded - {df['Country'].nunique()} countries")
+    st.caption(f"v0.4 - {len(df)} activities loaded - {df['Country'].nunique()} countries")
 
 # ============================================================
 #  Apply filters
@@ -227,44 +252,150 @@ with tab_dashboard:
         st.error(f"Dashboard could not render: {e}")
 
 # ============================================================
-#  Tab: Calendar (with click-row drill-down)
+#  Tab: Calendar (Month / Week / List views)
 # ============================================================
 with tab_calendar:
     chart_title_with_explainer("calendar", "###")
     try:
-        st.caption(f"{len(view)} activities - {view['Country'].nunique()} countries")
         if view.empty:
             st.info("No activities match your filters.")
         else:
-            insight(f"Showing {len(view)} activities. Sort columns by clicking the headers. "
-                    f"Pick an activity below to see its full details.")
+            cal_view = st.radio("Calendar view", ["Month", "Week", "List"],
+                                horizontal=True, key="cal_view")
 
-            # Searchable, sortable table
-            display = view[["StartDate", "EndDate", "Type", "Title", "Country",
-                            "Initiating Function", "Initiating Sub-Function",
-                            "Attendee Category", "Participating Function",
-                            "Internal/External", "Status", "Weighting", "Note"]].reset_index(drop=True)
-            st.dataframe(display, use_container_width=True, hide_index=True)
+            # ============================================
+            #  MONTH VIEW
+            # ============================================
+            if cal_view == "Month":
+                months = sorted(view["StartDate"].dt.to_period("M").unique())
+                month_labels = {m: m.strftime("%B %Y") for m in months}
+                pick_m = st.selectbox("Month", months, format_func=lambda m: month_labels[m], key="cal_month")
 
-            # ---- Click-row drill-down ----
-            st.markdown("##### 🔍 Activity drill-down")
-            options = view.assign(
-                _label=view["Title"].astype(str) + " - " + view["Country"].astype(str)
-                        + " - " + view["StartDate"].dt.strftime("%b %d, %Y")
-            )["_label"].tolist()
-            pick = st.selectbox("Pick an activity to see full details", options=[""] + options)
+                year, month = pick_m.year, pick_m.month
+                first_weekday, days_in_month = cal.monthrange(year, month)
+                today = date.today()
 
-            if pick:
-                row = view.assign(
+                month_acts = view[
+                    (view["StartDate"].dt.year == year)
+                    & (view["StartDate"].dt.month == month)
+                ].copy()
+
+                insight(f"{len(month_acts)} activities in {month_labels[pick_m]}. "
+                        f"{month_acts['Country'].nunique()} countries. "
+                        f"Click any day in the grid to see activities.")
+
+                # Day-of-week header
+                dow_cols = st.columns(7)
+                for i, dname in enumerate(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
+                    dow_cols[i].markdown(f"**{dname}**")
+
+                # Pad start with previous-month days
+                pad = first_weekday
+                day = 1
+                done = False
+                while not done:
+                    week_cols = st.columns(7)
+                    for i in range(7):
+                        if (pad > 0):
+                            week_cols[i].markdown("<div class='cal-cell cal-outside'></div>", unsafe_allow_html=True)
+                            pad -= 1
+                        elif day <= days_in_month:
+                            d = date(year, month, day)
+                            day_acts = month_acts[month_acts["StartDate"].dt.day == day]
+
+                            cls = "cal-cell"
+                            if d == today:
+                                cls += " cal-today"
+                            elif d.weekday() >= 5:
+                                cls += " cal-weekend"
+
+                            inner = f"<span class='cal-day-num'>{day}</span>"
+                            for _, a in day_acts.head(4).iterrows():
+                                colr = TYPE_COLORS.get(a["Type"], "#999")
+                                title_short = (a["Title"][:22] + "…") if len(str(a["Title"])) > 22 else a["Title"]
+                                inner += f"<span class='cal-activity' style='background:{colr};' title='{a['Title']} - {a['Country']}'>{title_short}</span>"
+                            if len(day_acts) > 4:
+                                inner += f"<span style='font-size:10px;color:#888;'>+{len(day_acts)-4} more</span>"
+
+                            week_cols[i].markdown(f"<div class='{cls}'>{inner}</div>", unsafe_allow_html=True)
+                            day += 1
+                        else:
+                            week_cols[i].markdown("<div class='cal-cell cal-outside'></div>", unsafe_allow_html=True)
+                    if day > days_in_month:
+                        done = True
+
+                # Legend
+                st.markdown("##### Legend")
+                legend_html = ""
+                for t, c in TYPE_COLORS.items():
+                    legend_html += f"<span class='cal-activity' style='background:{c}; padding:4px 10px;'>{t}</span> "
+                st.markdown(legend_html, unsafe_allow_html=True)
+
+            # ============================================
+            #  WEEK VIEW
+            # ============================================
+            elif cal_view == "Week":
+                weeks = sorted(view["StartDate"].dt.to_period("W").unique())
+                week_labels = {w: f"Week of {w.start_time.strftime('%b %d, %Y')}" for w in weeks}
+                pick_w = st.selectbox("Week", weeks, format_func=lambda w: week_labels[w], key="cal_week")
+
+                start_of_week = pick_w.start_time.date()
+                week_acts = view[
+                    (view["StartDate"].dt.date >= start_of_week)
+                    & (view["StartDate"].dt.date <= start_of_week + timedelta(days=6))
+                ]
+
+                insight(f"{len(week_acts)} activities in {week_labels[pick_w]}. Hosts: "
+                        f"{week_acts['Initiating Function'].nunique()} functions, "
+                        f"{week_acts['Country'].nunique()} countries.")
+
+                day_cols = st.columns(7)
+                for i in range(7):
+                    d = start_of_week + timedelta(days=i)
+                    dname = d.strftime("%a %b %d")
+                    day_acts = week_acts[week_acts["StartDate"].dt.date == d]
+                    cls = "cal-cell"
+                    if d == date.today():
+                        cls += " cal-today"
+                    elif d.weekday() >= 5:
+                        cls += " cal-weekend"
+
+                    inner = f"<span class='cal-day-num'>{dname}</span>"
+                    for _, a in day_acts.iterrows():
+                        colr = TYPE_COLORS.get(a["Type"], "#999")
+                        inner += f"<span class='cal-activity' style='background:{colr};'>{a['Title']} {flag(a['Country'])}</span>"
+                    day_cols[i].markdown(f"<div class='{cls}' style='min-height:200px;'>{inner}</div>", unsafe_allow_html=True)
+
+            # ============================================
+            #  LIST VIEW
+            # ============================================
+            else:
+                st.caption(f"{len(view)} activities - {view['Country'].nunique()} countries")
+                insight(f"Sortable list of {len(view)} activities. Pick one below for full details.")
+                display = view[["StartDate", "EndDate", "Type", "Title", "Country",
+                                "Initiating Function", "Initiating Sub-Function",
+                                "Attendee Category", "Participating Function",
+                                "Internal/External", "Status", "Weighting", "Note"]].reset_index(drop=True)
+                st.dataframe(display, use_container_width=True, hide_index=True)
+
+                st.markdown("##### 🔍 Activity drill-down")
+                options = view.assign(
                     _label=view["Title"].astype(str) + " - " + view["Country"].astype(str)
                             + " - " + view["StartDate"].dt.strftime("%b %d, %Y")
-                ).query("_label == @pick").iloc[0]
+                )["_label"].tolist()
+                pick = st.selectbox("Pick an activity to see full details", options=[""] + options)
 
-                d1, d2 = st.columns([2, 1])
-                with d1:
-                    st.markdown(f"""
+                if pick:
+                    row = view.assign(
+                        _label=view["Title"].astype(str) + " - " + view["Country"].astype(str)
+                                + " - " + view["StartDate"].dt.strftime("%b %d, %Y")
+                    ).query("_label == @pick").iloc[0]
+
+                    d1, d2 = st.columns([2, 1])
+                    with d1:
+                        st.markdown(f"""
 <div class='detail-card'>
-<h4 style='color:{FOUNDATION_ORANGE}; margin-top:0;'>{row['Title']}</h4>
+<h4 style='color:{FOUNDATION_ORANGE}; margin-top:0;'>{flag(row['Country'])} {row['Title']}</h4>
 <p style='color:#666;'><strong>{row['Type']}</strong> - {row['Country']} - {row['StartDate'].strftime('%b %d')} to {row['EndDate'].strftime('%b %d, %Y')}</p>
 <p><strong>Hosting:</strong> {row['Initiating Function']} ({row['Initiating Sub-Function']})<br>
 <strong>Participating:</strong> {row['Participating Function'] if str(row['Participating Function']) != 'nan' else 'None'}<br>
@@ -274,30 +405,28 @@ with tab_calendar:
 <p style='color:#444;'><em>{row['Note'] if str(row['Note']) != 'nan' else ''}</em></p>
 </div>
 """, unsafe_allow_html=True)
-
-                with d2:
-                    # Find nearby activities (within 7 days)
-                    start = row["StartDate"]
-                    end = row["EndDate"]
-                    nearby = view[
-                        (view["StartDate"] >= start - pd.Timedelta(days=7))
-                        & (view["StartDate"] <= end + pd.Timedelta(days=7))
-                        & (view["Title"] != row["Title"])
-                    ]
-                    st.markdown(f"##### Nearby activities (±7 days)")
-                    if nearby.empty:
-                        st.caption("No overlapping activities within ±7 days.")
-                    else:
-                        st.caption(f"{len(nearby)} other activities within ±7 days")
-                        for _, n in nearby.head(8).iterrows():
-                            st.markdown(
-                                f"- **{n['Title']}** - {n['Country']} - {n['StartDate'].strftime('%b %d')} ({n['Initiating Function']})"
-                            )
+                    with d2:
+                        start = row["StartDate"]
+                        end = row["EndDate"]
+                        nearby = view[
+                            (view["StartDate"] >= start - pd.Timedelta(days=7))
+                            & (view["StartDate"] <= end + pd.Timedelta(days=7))
+                            & (view["Title"] != row["Title"])
+                        ]
+                        st.markdown("##### Nearby activities (±7 days)")
+                        if nearby.empty:
+                            st.caption("No overlapping activities within ±7 days.")
+                        else:
+                            st.caption(f"{len(nearby)} other activities within ±7 days")
+                            for _, n in nearby.head(8).iterrows():
+                                st.markdown(
+                                    f"- {flag(n['Country'])} **{n['Title']}** - {n['StartDate'].strftime('%b %d')} ({n['Initiating Function']})"
+                                )
     except Exception as e:
         st.error(f"Calendar could not render: {e}")
 
 # ============================================================
-#  Tab: Heatmap (with cell drill-down)
+#  Tab: Heatmap (with row/column totals + conflict badge)
 # ============================================================
 with tab_heatmap:
     chart_title_with_explainer("pressure", "###")
@@ -325,6 +454,33 @@ with tab_heatmap:
                               plot_bgcolor="white")
             st.plotly_chart(fig, use_container_width=True)
             st.caption(f"Comfort thresholds - Elevated >= {THRESHOLD_ELEVATED}, Critical >= {THRESHOLD_CRITICAL}")
+
+            # ---- Row totals (per function) ----
+            st.markdown("##### Functions needing attention")
+            func_totals = pivot.sum(axis=0).reset_index()
+            func_totals.columns = ["Function", "Total"]
+            func_totals["Peak week"] = pivot.max(axis=0).values.astype(int)
+            func_totals = func_totals.sort_values("Total", ascending=False)
+
+            def rag(peak):
+                if peak >= THRESHOLD_CRITICAL: return "🔴 Critical"
+                if peak >= THRESHOLD_ELEVATED: return "🟠 Elevated"
+                return "🟢 Balanced"
+
+            func_totals["Status"] = func_totals["Peak week"].apply(rag)
+            func_totals["Recommended action"] = func_totals["Peak week"].apply(
+                lambda p: "Reschedule or rebalance peak weeks" if p >= THRESHOLD_CRITICAL
+                else ("Monitor peak weeks" if p >= THRESHOLD_ELEVATED else "No action needed")
+            )
+            st.dataframe(func_totals, use_container_width=True, hide_index=True)
+
+            # ---- Column totals (per week) ----
+            st.markdown("##### Busiest weeks")
+            week_totals = pivot.sum(axis=1).reset_index()
+            week_totals.columns = ["Week", "Total"]
+            week_totals = week_totals.sort_values("Total", ascending=False).head(10)
+            week_totals["Week"] = pd.to_datetime(week_totals["Week"]).dt.strftime("Week of %b %d, %Y")
+            st.dataframe(week_totals, use_container_width=True, hide_index=True)
 
             # ---- Cell drill-down ----
             st.markdown("##### 🔍 Pressure point drill-down")
@@ -381,7 +537,7 @@ with tab_gantt:
         st.error(f"Gantt could not render: {e}")
 
 # ============================================================
-#  Tab: Location
+#  Tab: Location (with flags, region chips, comparison)
 # ============================================================
 with tab_location:
     chart_title_with_explainer("location", "###")
@@ -397,20 +553,52 @@ with tab_location:
             if not by_region.empty:
                 top_region = by_region.iloc[0]["Region"]
                 top_region_n = int(by_region.iloc[0]["Activities"])
-                insight(f"{top_country} leads activity volume ({top_country_n} activities). "
+                insight(f"{flag(top_country)} {top_country} leads activity volume ({top_country_n} activities). "
                         f"{top_region} region carries {top_region_n/len(view)*100:.0f}% of total load.")
             else:
-                insight(f"{top_country} leads activity volume ({top_country_n} activities).")
+                insight(f"{flag(top_country)} {top_country} leads activity volume ({top_country_n} activities).")
 
-            st.markdown("##### By region")
-            st.dataframe(by_region, use_container_width=True, hide_index=True)
+            # ---- Region chips (visual) ----
+            st.markdown("##### Regional roll-up")
+            chips_html = ""
+            for _, r in by_region.iterrows():
+                share = r["Activities"] / len(view) * 100
+                chips_html += (f"<span class='region-chip'>"
+                               f"<strong>{r['Region']}</strong> · {r['Activities']} activities · {share:.0f}%"
+                               f"</span>")
+            st.markdown(chips_html, unsafe_allow_html=True)
 
+            # ---- Comparison toggle ----
             st.markdown("##### By country")
-            by_country = (view.groupby("Country").size().reset_index(name="Activities")
-                             .sort_values("Activities", ascending=True))
-            fig = px.bar(by_country, x="Activities", y="Country", orientation="h",
-                         color_discrete_sequence=[FOUNDATION_ORANGE])
-            fig.update_layout(height=max(400, len(by_country)*22), plot_bgcolor="white",
+            comparison = st.checkbox("Show vs prior 90 days", value=False, key="loc_compare")
+
+            by_country = (view.groupby("Country").size().reset_index(name="Current")
+                             .sort_values("Current", ascending=True))
+            by_country["Country with flag"] = by_country["Country"].apply(lambda c: f"{flag(c)} {c}")
+
+            if comparison:
+                # Compare against prior 90-day window
+                if isinstance(f_dates, tuple) and len(f_dates) == 2:
+                    cur_start, cur_end = f_dates
+                else:
+                    cur_start, cur_end = min_d, max_d
+                prior_start = cur_start - timedelta(days=90)
+                prior_end = cur_start - timedelta(days=1)
+                prior = df[(df["StartDate"].dt.date >= prior_start) & (df["StartDate"].dt.date <= prior_end)]
+                prior_counts = prior.groupby("Country").size().reset_index(name="Prior")
+                merged = by_country.merge(prior_counts, on="Country", how="left").fillna(0)
+                merged = merged.melt(id_vars=["Country", "Country with flag"],
+                                     value_vars=["Current", "Prior"],
+                                     var_name="Period", value_name="Activities")
+                fig = px.bar(merged, x="Activities", y="Country with flag", color="Period",
+                             orientation="h", barmode="group",
+                             color_discrete_map={"Current": FOUNDATION_ORANGE, "Prior": "#CCCCCC"})
+            else:
+                fig = px.bar(by_country, x="Current", y="Country with flag", orientation="h",
+                             color_discrete_sequence=[FOUNDATION_ORANGE],
+                             labels={"Current": "Activities"})
+
+            fig.update_layout(height=max(400, len(by_country)*24), plot_bgcolor="white",
                               margin=dict(l=20, r=20, t=20, b=20))
             st.plotly_chart(fig, use_container_width=True)
     except Exception as e:
