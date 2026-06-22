@@ -35,7 +35,8 @@ SHARED_PASSWORD = "foundation2026"
 if ENABLE_LOGIN:
     if "auth_ok" not in st.session_state:
         st.session_state.auth_ok = False
-    if not st.session_html=True)    if not st.session_state.auth_ok:
+    if not st.session_state.auth_ok:
+        st.markdown(f"<h1 style='color:{FOUNDATION_ORANGE};'>Activity Calendar</h1>", unsafe_allow_html=True)
         st.markdown("Mastercard Foundation · Enterprise Planning")
         st.write("")
         pw = st.text_input("Enter access password", type="password")
