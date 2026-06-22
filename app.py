@@ -1,5 +1,5 @@
 # ============================================================
-#  Activity Calendar - Streamlit App - v0.2.1
+#  Activity Calendar - Streamlit App - v0.3
 #  Mastercard Foundation - Enterprise Planning
 # ============================================================
 
@@ -13,6 +13,7 @@ from lookups import (TYPES, FUNCTIONS, SUB_FUNCTIONS, ATTENDEE_CATEGORIES,
                      FOUNDATION_ORANGE, FOUNDATION_BG, FOUNDATION_TEXT,
                      FOUNDATION_AMBER, FOUNDATION_RED, FOUNDATION_GREEN,
                      TYPE_COLORS, FUNCTION_COLORS, COUNTRY_TO_REGION)
+from explainers import KPI_EXPLAINERS, CHART_EXPLAINERS, chart_explainer_markdown
 
 # ============================================================
 #  Page setup + Foundation theme
@@ -33,6 +34,13 @@ st.markdown(f"""
         border-radius: 4px;
     }}
     div[data-baseweb="tag"] {{ background-color: {FOUNDATION_ORANGE} !important; }}
+    .detail-card {{
+        background: white;
+        border-left: 4px solid {FOUNDATION_ORANGE};
+        padding: 16px 20px;
+        border-radius: 6px;
+        margin: 8px 0;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -50,7 +58,30 @@ with col_toggle:
                          horizontal=True, label_visibility="collapsed")
 
 # ============================================================
-#  Data loading (cache-aware)
+#  Helper functions
+# ============================================================
+def insight(text):
+    """Render an italic orange-bordered insight strip."""
+    st.markdown(f"<div class='insight-strip'>💡 {text}</div>", unsafe_allow_html=True)
+
+def chart_title_with_explainer(key, level="###"):
+    """Render a chart title with an ⓘ explainer popover next to it."""
+    e = CHART_EXPLAINERS.get(key, {})
+    title = e.get("title", key)
+    col_t, col_i = st.columns([20, 1])
+    with col_t:
+        st.markdown(f"{level} {title}")
+    with col_i:
+        with st.popover("ⓘ", use_container_width=True):
+            st.markdown(chart_explainer_markdown(key))
+
+def kpi_with_tooltip(col, label, value, delta=None):
+    """Render a KPI metric with an info tooltip."""
+    help_text = KPI_EXPLAINERS.get(label, "")
+    col.metric(label, value, delta, help=help_text)
+
+# ============================================================
+#  Data loading
 # ============================================================
 @st.cache_data
 def load_data(file_mtime):
@@ -75,28 +106,21 @@ if "activities" not in st.session_state:
 df = st.session_state.activities
 
 # ============================================================
-#  Sidebar - full filter set
+#  Sidebar filters
 # ============================================================
 with st.sidebar:
     st.markdown("### 🔍 Filters")
 
     f_type = st.multiselect("Type", TYPES, default=TYPES)
-
     f_hosting = st.multiselect("Hosting function", FUNCTIONS, default=FUNCTIONS)
-
     f_participating = st.multiselect(
         "Participating function", FUNCTIONS,
         help="Filter activities where any of the chosen functions are participating."
     )
-
     f_country = st.multiselect("Country", sorted(df["Country"].dropna().unique()))
-
     f_region = st.multiselect("Region", sorted(df["Region"].dropna().unique()))
-
     f_status = st.multiselect("Status", STATUS, default=STATUS)
-
     f_weighting = st.multiselect("Weighting", WEIGHTING, default=WEIGHTING)
-
     f_delivery = st.multiselect("Internal/External", DELIVERY_MODE, default=DELIVERY_MODE)
 
     min_d, max_d = df["StartDate"].min().date(), df["EndDate"].max().date()
@@ -104,7 +128,7 @@ with st.sidebar:
                             min_value=min_d, max_value=max_d)
 
     st.markdown("---")
-    st.caption(f"v0.2.1 - {len(df)} activities loaded - {df['Country'].nunique()} countries")
+    st.caption(f"v0.3 - {len(df)} activities loaded - {df['Country'].nunique()} countries")
 
 # ============================================================
 #  Apply filters
@@ -130,10 +154,6 @@ if isinstance(f_dates, tuple) and len(f_dates) == 2:
     mask &= (df["StartDate"].dt.date >= start) & (df["StartDate"].dt.date <= end)
 
 view = df[mask].copy()
-
-# ---- Helper: insight strip ----
-def insight(text):
-    st.markdown(f"<div class='insight-strip'>💡 {text}</div>", unsafe_allow_html=True)
 
 # ============================================================
 #  Tabs
@@ -162,11 +182,11 @@ with tab_dashboard:
         high_w   = int((view["Weighting"] == "High").sum())
         countries = view["Country"].nunique()
 
-        c1.metric("Total activities", total)
-        c2.metric("Approved", approved, f"{approved/max(total,1)*100:.0f}%")
-        c3.metric("Pending", pending, f"{pending/max(total,1)*100:.0f}%")
-        c4.metric("High weighting", high_w)
-        c5.metric("Countries", countries)
+        kpi_with_tooltip(c1, "Total activities", total)
+        kpi_with_tooltip(c2, "Approved", approved, f"{approved/max(total,1)*100:.0f}%")
+        kpi_with_tooltip(c3, "Pending", pending, f"{pending/max(total,1)*100:.0f}%")
+        kpi_with_tooltip(c4, "High weighting", high_w)
+        kpi_with_tooltip(c5, "Countries", countries)
 
         if total > 0:
             top_func = view["Initiating Function"].value_counts().idxmax()
@@ -181,7 +201,7 @@ with tab_dashboard:
         else:
             insight("No activities match your filters. Adjust the sidebar to see results.")
 
-        st.markdown("#### When is the Foundation busiest?")
+        chart_title_with_explainer("busiest", "####")
         if not view.empty:
             v = view.copy()
             v["Month"] = v["StartDate"].dt.to_period("M").astype(str)
@@ -192,7 +212,7 @@ with tab_dashboard:
                               margin=dict(l=20, r=20, t=20, b=20))
             st.plotly_chart(fig, use_container_width=True)
 
-        st.markdown("#### Are we focused on the right work?")
+        chart_title_with_explainer("priority", "####")
         if not view.empty:
             by_w = view["Weighting"].value_counts().reset_index()
             by_w.columns = ["Weighting", "Count"]
@@ -207,32 +227,80 @@ with tab_dashboard:
         st.error(f"Dashboard could not render: {e}")
 
 # ============================================================
-#  Tab: Calendar (list view)
+#  Tab: Calendar (with click-row drill-down)
 # ============================================================
 with tab_calendar:
-    st.subheader("Calendar")
+    chart_title_with_explainer("calendar", "###")
     try:
         st.caption(f"{len(view)} activities - {view['Country'].nunique()} countries")
         if view.empty:
             st.info("No activities match your filters.")
         else:
             insight(f"Showing {len(view)} activities. Sort columns by clicking the headers. "
-                    f"Use the sidebar filters to narrow further.")
-            st.dataframe(
-                view[["StartDate", "EndDate", "Type", "Title", "Country",
-                      "Initiating Function", "Initiating Sub-Function",
-                      "Attendee Category", "Participating Function",
-                      "Internal/External", "Status", "Weighting", "Note"]],
-                use_container_width=True, hide_index=True
-            )
+                    f"Pick an activity below to see its full details.")
+
+            # Searchable, sortable table
+            display = view[["StartDate", "EndDate", "Type", "Title", "Country",
+                            "Initiating Function", "Initiating Sub-Function",
+                            "Attendee Category", "Participating Function",
+                            "Internal/External", "Status", "Weighting", "Note"]].reset_index(drop=True)
+            st.dataframe(display, use_container_width=True, hide_index=True)
+
+            # ---- Click-row drill-down ----
+            st.markdown("##### 🔍 Activity drill-down")
+            options = view.assign(
+                _label=view["Title"].astype(str) + " - " + view["Country"].astype(str)
+                        + " - " + view["StartDate"].dt.strftime("%b %d, %Y")
+            )["_label"].tolist()
+            pick = st.selectbox("Pick an activity to see full details", options=[""] + options)
+
+            if pick:
+                row = view.assign(
+                    _label=view["Title"].astype(str) + " - " + view["Country"].astype(str)
+                            + " - " + view["StartDate"].dt.strftime("%b %d, %Y")
+                ).query("_label == @pick").iloc[0]
+
+                d1, d2 = st.columns([2, 1])
+                with d1:
+                    st.markdown(f"""
+<div class='detail-card'>
+<h4 style='color:{FOUNDATION_ORANGE}; margin-top:0;'>{row['Title']}</h4>
+<p style='color:#666;'><strong>{row['Type']}</strong> - {row['Country']} - {row['StartDate'].strftime('%b %d')} to {row['EndDate'].strftime('%b %d, %Y')}</p>
+<p><strong>Hosting:</strong> {row['Initiating Function']} ({row['Initiating Sub-Function']})<br>
+<strong>Participating:</strong> {row['Participating Function'] if str(row['Participating Function']) != 'nan' else 'None'}<br>
+<strong>Attendees:</strong> {row['Attendee Category']}<br>
+<strong>Mode:</strong> {row['Internal/External']}<br>
+<strong>Status:</strong> {row['Status']} - <strong>Weighting:</strong> {row['Weighting']}</p>
+<p style='color:#444;'><em>{row['Note'] if str(row['Note']) != 'nan' else ''}</em></p>
+</div>
+""", unsafe_allow_html=True)
+
+                with d2:
+                    # Find nearby activities (within 7 days)
+                    start = row["StartDate"]
+                    end = row["EndDate"]
+                    nearby = view[
+                        (view["StartDate"] >= start - pd.Timedelta(days=7))
+                        & (view["StartDate"] <= end + pd.Timedelta(days=7))
+                        & (view["Title"] != row["Title"])
+                    ]
+                    st.markdown(f"##### Nearby activities (±7 days)")
+                    if nearby.empty:
+                        st.caption("No overlapping activities within ±7 days.")
+                    else:
+                        st.caption(f"{len(nearby)} other activities within ±7 days")
+                        for _, n in nearby.head(8).iterrows():
+                            st.markdown(
+                                f"- **{n['Title']}** - {n['Country']} - {n['StartDate'].strftime('%b %d')} ({n['Initiating Function']})"
+                            )
     except Exception as e:
         st.error(f"Calendar could not render: {e}")
 
 # ============================================================
-#  Tab: Heatmap
+#  Tab: Heatmap (with cell drill-down)
 # ============================================================
 with tab_heatmap:
-    st.subheader("Where is workload pressure building?")
+    chart_title_with_explainer("pressure", "###")
     try:
         if view.empty:
             st.info("No activities match your filters.")
@@ -257,6 +325,28 @@ with tab_heatmap:
                               plot_bgcolor="white")
             st.plotly_chart(fig, use_container_width=True)
             st.caption(f"Comfort thresholds - Elevated >= {THRESHOLD_ELEVATED}, Critical >= {THRESHOLD_CRITICAL}")
+
+            # ---- Cell drill-down ----
+            st.markdown("##### 🔍 Pressure point drill-down")
+            d1, d2 = st.columns(2)
+            with d1:
+                pick_func = st.selectbox("Function", FUNCTIONS, key="hm_func")
+            with d2:
+                week_options = sorted(v["Week"].unique())
+                week_labels = {w: pd.to_datetime(w).strftime("Week of %b %d, %Y") for w in week_options}
+                pick_week = st.selectbox("Week", options=week_options,
+                                          format_func=lambda w: week_labels[w], key="hm_week")
+
+            cell_rows = v[(v["Initiating Function"] == pick_func) & (v["Week"] == pick_week)]
+            if cell_rows.empty:
+                st.caption(f"No {pick_func} activities in {week_labels[pick_week]}.")
+            else:
+                st.caption(f"{len(cell_rows)} {pick_func} activities in {week_labels[pick_week]}")
+                st.dataframe(
+                    cell_rows[["Title", "Country", "StartDate", "EndDate", "Type",
+                               "Attendee Category", "Status", "Weighting"]],
+                    use_container_width=True, hide_index=True
+                )
     except Exception as e:
         st.error(f"Heatmap could not render: {e}")
 
@@ -264,7 +354,7 @@ with tab_heatmap:
 #  Tab: Gantt
 # ============================================================
 with tab_gantt:
-    st.subheader("Activity timeline (Gantt)")
+    chart_title_with_explainer("gantt", "###")
     try:
         if view.empty:
             st.info("No activities match your filters.")
@@ -294,7 +384,7 @@ with tab_gantt:
 #  Tab: Location
 # ============================================================
 with tab_location:
-    st.subheader("Where in our markets is activity concentrated?")
+    chart_title_with_explainer("location", "###")
     try:
         if view.empty:
             st.info("No activities match your filters.")
