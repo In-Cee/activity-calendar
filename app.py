@@ -1,5 +1,5 @@
 # ============================================================
-#  Activity Calendar - Streamlit App - v0.6.1
+#  Activity Calendar - Streamlit App - v0.6.2
 #  Mastercard Foundation - Enterprise Planning
 # ============================================================
 
@@ -27,7 +27,7 @@ st.set_page_config(page_title="Activity Calendar", page_icon="📅", layout="wid
 init_settings()
 
 # ============================================================
-#  Optional access gate (shared password)
+#  Optional access gate
 # ============================================================
 ENABLE_LOGIN = True
 SHARED_PASSWORD = "foundation2026"
@@ -35,8 +35,7 @@ SHARED_PASSWORD = "foundation2026"
 if ENABLE_LOGIN:
     if "auth_ok" not in st.session_state:
         st.session_state.auth_ok = False
-    if not st.session_state.auth_ok:
-        st.markdown(f"<h1 style='color:{FOUNDATION_ORANGE};'>Activity Calendar</h1>", unsafe_allow_html=True)
+    if not st.session_html=True)    if not st.session_state.auth_ok:
         st.markdown("Mastercard Foundation · Enterprise Planning")
         st.write("")
         pw = st.text_input("Enter access password", type="password")
@@ -132,17 +131,24 @@ def kpi_with_tooltip(col, label, value, delta=None):
     col.metric(label, value, delta, help=help_text)
 
 def normalize_status(df):
-    """Standardise Status column so case/whitespace doesn't hide rows."""
     if "Status" in df.columns:
         df["Status"] = df["Status"].astype(str).str.strip().str.title()
         df.loc[df["Status"].isin(["", "Nan", "None"]), "Status"] = "Approved"
     return df
 
+def ensure_derived_columns(df):
+    """Make sure Country and Region exist; safe to call multiple times."""
+    if "Country" not in df.columns or df["Country"].isna().any():
+        df["Country"] = df["Location"].astype(str).str.split(", ").str[-1].str.strip()
+    if "Region" not in df.columns or df["Region"].isna().any():
+        df["Region"] = df["Country"].map(COUNTRY_TO_REGION).fillna("Other")
+    return df
+
 # ============================================================
-#  Data loading
+#  Data loading - robust to reruns
 # ============================================================
 @st.cache_data
-def load_data(file_mtime):
+def load_excel(file_mtime):
     df = pd.read_excel("activities.xlsx", sheet_name="Activities", header=1)
     df["StartDate"] = pd.to_datetime(df["StartDate"])
     df["EndDate"]   = pd.to_datetime(df["EndDate"])
@@ -151,16 +157,20 @@ def load_data(file_mtime):
     if "Weighting" not in df.columns:
         df["Weighting"] = "Medium"
     df = normalize_status(df)
-    df["Country"] = df["Location"].astype(str).str.split(", ").str[-1].str.strip()
-    df["Region"]  = df["Country"].map(COUNTRY_TO_REGION).fillna("Other")
+    df = ensure_derived_columns(df)
     return df
 
 file_mtime = os.path.getmtime("activities.xlsx")
-if "activities" not in st.session_state:
-    st.session_state.activities = load_data(file_mtime)
 
-# Always normalize Status on every rerun (covers newly submitted rows)
+# Robust pattern: track if we've initialised once. Use a separate counter
+# so accidental cache invalidation doesn't wipe submissions.
+if "init_done" not in st.session_state:
+    st.session_state.activities = load_excel(file_mtime).copy()
+    st.session_state.init_done = True
+
+# Always re-normalise on every rerun (cheap, protects against drift)
 st.session_state.activities = normalize_status(st.session_state.activities)
+st.session_state.activities = ensure_derived_columns(st.session_state.activities)
 df = st.session_state.activities
 
 # ============================================================
@@ -185,7 +195,7 @@ with st.sidebar:
                             min_value=min_d, max_value=max_d)
 
     st.markdown("---")
-    st.caption(f"v0.6.1 - {len(df)} activities loaded - {df['Country'].nunique()} countries")
+    st.caption(f"v0.6.2 - {len(df)} activities loaded - {df['Country'].nunique()} countries")
     if ENABLE_LOGIN:
         if st.button("Sign out"):
             st.session_state.auth_ok = False
@@ -241,8 +251,7 @@ with tab_brief:
         countries = view["Country"].nunique()
 
         narrative_plain = ""
-        top_func = "-"
-        top_country = "-"
+        top_func = "-"; top_country = "-"
         if total > 0:
             top_func = view["Initiating Function"].value_counts().idxmax()
             top_func_n = int(view["Initiating Function"].value_counts().max())
@@ -345,7 +354,7 @@ with tab_brief:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
-            ex3.caption("📄 For PDF: press Ctrl+P → Save as PDF (sidebar auto-hidden).")
+            ex3.caption("📄 For PDF: press Ctrl+P → Save as PDF.")
     except Exception as e:
         st.error(f"Exec Brief could not render: {e}")
 
@@ -361,7 +370,6 @@ with tab_dashboard:
         pending  = int((view["Status"] == "Pending").sum())
         high_w   = int((view["Weighting"] == "High").sum())
         countries = view["Country"].nunique()
-
         kpi_with_tooltip(c1, "Total activities", total)
         kpi_with_tooltip(c2, "Approved", approved, f"{approved/max(total,1)*100:.0f}%")
         kpi_with_tooltip(c3, "Pending", pending, f"{pending/max(total,1)*100:.0f}%")
@@ -490,7 +498,7 @@ with tab_calendar:
                 insight(f"Sortable list of {len(view)} activities. Pick one below for full details.")
                 display = view[["StartDate", "EndDate", "Type", "Title", "Country",
                                 "Initiating Function", "Initiating Sub-Function",
-                                "Attendee Category", "Participating Function",
+                                "Attendee Category", "Participating Function", "Participating Sub-Function",
                                 "Internal/External", "Status", "Weighting", "Note"]].reset_index(drop=True)
                 st.dataframe(display, use_container_width=True, hide_index=True)
 
@@ -518,6 +526,7 @@ with tab_calendar:
 <p style='color:#666;'><strong>{row['Type']}</strong> - {row['Country']} - {row['StartDate'].strftime('%b %d')} to {row['EndDate'].strftime('%b %d, %Y')}</p>
 <p><strong>Hosting:</strong> {row['Initiating Function']} ({row['Initiating Sub-Function']})<br>
 <strong>Participating:</strong> {row['Participating Function'] if str(row['Participating Function']) != 'nan' else 'None'}<br>
+<strong>Participating sub-functions:</strong> {row.get('Participating Sub-Function','') if str(row.get('Participating Sub-Function','')) != 'nan' else 'None'}<br>
 <strong>Attendees:</strong> {row['Attendee Category']}<br>
 <strong>Mode:</strong> {row['Internal/External']}<br>
 <strong>Status:</strong> {row['Status']} - <strong>Weighting:</strong> {row['Weighting']}</p>
@@ -702,23 +711,26 @@ with tab_location:
         st.error(f"Location could not render: {e}")
 
 # ============================================================
-#  Tab: Approvals (with status normalization + diagnostic)
+#  Tab: Approvals (uses FULL dataset + diagnostic)
 # ============================================================
 with tab_approvals:
     st.subheader("✅ Approvals queue")
     try:
-        # Reuse the already-normalized full dataset
         all_acts = st.session_state.activities.copy()
         pending_df = all_acts[all_acts["Status"] == "Pending"].copy()
 
-        st.caption(f"{len(pending_df)} activities awaiting review across the full dataset (sidebar filters do not apply here).")
+        st.caption(f"{len(pending_df)} activities awaiting review (sidebar filters do not apply here).")
 
-        # Diagnostic expander
-        with st.expander("🔍 Status diagnostic (click if queue looks wrong)"):
+        # Diagnostic
+        with st.expander("🔍 Status diagnostic (click to inspect)", expanded=(len(pending_df) == 0)):
             status_counts = all_acts["Status"].value_counts().reset_index()
             status_counts.columns = ["Status", "Count"]
             st.dataframe(status_counts, use_container_width=True, hide_index=True)
-            st.caption("If your submission isn't appearing above with Status 'Pending', the value is being saved differently. Send me a screenshot.")
+            st.caption(f"Total activities in memory: {len(all_acts)}. If a recent submission isn't here, the rerun cleared session state. "
+                       f"Try submitting again and clicking the Approvals tab without refreshing the browser.")
+            recent = all_acts.tail(5)[["Title", "Status", "Initiating Function", "StartDate"]]
+            st.markdown("**Last 5 activities in memory:**")
+            st.dataframe(recent, use_container_width=True, hide_index=True)
 
         if pending_df.empty:
             st.success("🎉 No activities pending. The queue is clear.")
@@ -734,6 +746,9 @@ with tab_approvals:
                                    f"{pd.to_datetime(row['EndDate']).strftime('%b %d, %Y')}")
                         st.caption(f"Hosting: {row['Initiating Function']} ({row['Initiating Sub-Function']}) · "
                                    f"Weighting: {row['Weighting']}")
+                        part = str(row.get("Participating Function", ""))
+                        if part and part.lower() != "nan":
+                            st.caption(f"Participating: {part}")
                         if str(row.get("Note","")) != "nan" and row.get("Note"):
                             st.caption(f"📝 {row['Note']}")
                     with c2:
@@ -750,44 +765,82 @@ with tab_approvals:
         st.error(f"Approvals could not render: {e}")
 
 # ============================================================
-#  Tab: Submit
+#  Tab: Submit (with Participating Function + Sub-Function)
 # ============================================================
 with tab_submit:
     st.subheader("Submit a new activity")
     try:
+        # All available sub-functions (flat list) for the participating picker
+        ALL_SUBS = sorted({s for lst in SUB_FUNCTIONS.values() for s in lst})
+
         with st.form("submit", clear_on_submit=True):
             col1, col2 = st.columns(2)
             title    = col1.text_input("Activity name")
             a_type   = col2.selectbox("Type", TYPES)
             start    = col1.date_input("Start date")
             end      = col2.date_input("End date")
-            location = col1.text_input("Location (City, Country)")
-            func     = col2.selectbox("Initiating Function", FUNCTIONS)
+            location = col1.text_input("Location (City, Country)", placeholder="e.g., Kigali, Rwanda")
+            func     = col2.selectbox("Initiating Function (Host)", FUNCTIONS)
             subfunc  = col1.selectbox("Initiating Sub-Function", SUB_FUNCTIONS[func])
             attendee = col2.selectbox("Attendee Category", ATTENDEE_CATEGORIES)
-            delivery = col1.selectbox("Internal/External", DELIVERY_MODE)
-            weighting = col2.selectbox("Weighting", WEIGHTING, index=1)
-            note     = st.text_area("Note", max_chars=250)
 
-            if st.form_submit_button("✅ Submit", type="primary"):
-                country = location.split(", ")[-1].strip() if ", " in location else ""
-                region = COUNTRY_TO_REGION.get(country, "Other")
-                new = pd.DataFrame([{
-                    "StartDate": pd.to_datetime(start), "EndDate": pd.to_datetime(end),
-                    "Type": a_type, "Title": title, "Location": location,
-                    "Country": country, "Region": region,
-                    "Initiating Function": func, "Initiating Sub-Function": subfunc,
-                    "Attendee Category": attendee, "Participating Function": "",
-                    "Participating Sub-Function": "", "Internal/External": delivery,
-                    "Month (Auto/Manual)": pd.to_datetime(start).strftime("%b"),
-                    "Year (Auto/Manual)": pd.to_datetime(start).year,
-                    "Note": note, "Status": "Pending", "Weighting": weighting
-                }])
-                st.session_state.activities = pd.concat(
-                    [st.session_state.activities, new], ignore_index=True)
-                st.session_state.activities = normalize_status(st.session_state.activities)
-                log_change("Submitted", f"{title} ({country})")
-                st.success(f"✅ '{title}' submitted as Pending with {weighting} weighting. Check the Approvals tab.")
+            st.markdown("##### Participating teams (optional)")
+            part_funcs = st.multiselect("Participating Function(s)",
+                                        [f for f in FUNCTIONS if f != func],
+                                        help="Other functions involved as participants, not hosts.")
+            part_subs  = st.multiselect("Participating Sub-Function(s)", ALL_SUBS,
+                                        help="Specific sub-functions involved as participants.")
+
+            col3, col4 = st.columns(2)
+            delivery  = col3.selectbox("Internal/External", DELIVERY_MODE)
+            weighting = col4.selectbox("Weighting", WEIGHTING, index=1)
+            note      = st.text_area("Note", max_chars=250)
+
+            submitted = st.form_submit_button("✅ Submit", type="primary")
+
+            if submitted:
+                if not title.strip():
+                    st.error("Please enter an Activity name.")
+                elif not location.strip():
+                    st.error("Please enter a Location (City, Country).")
+                elif end < start:
+                    st.error("End date cannot be before Start date.")
+                else:
+                    country = location.split(", ")[-1].strip() if ", " in location else location.strip()
+                    region = COUNTRY_TO_REGION.get(country, "Other")
+                    new = pd.DataFrame([{
+                        "StartDate": pd.to_datetime(start), "EndDate": pd.to_datetime(end),
+                        "Type": a_type, "Title": title.strip(), "Location": location.strip(),
+                        "Country": country, "Region": region,
+                        "Initiating Function": func, "Initiating Sub-Function": subfunc,
+                        "Attendee Category": attendee,
+                        "Participating Function": ", ".join(part_funcs),
+                        "Participating Sub-Function": ", ".join(part_subs),
+                        "Internal/External": delivery,
+                        "Month (Auto/Manual)": pd.to_datetime(start).strftime("%b"),
+                        "Year (Auto/Manual)": pd.to_datetime(start).year,
+                        "Note": note, "Status": "Pending", "Weighting": weighting
+                    }])
+                    st.session_state.activities = pd.concat(
+                        [st.session_state.activities, new], ignore_index=True)
+                    st.session_state.activities = normalize_status(st.session_state.activities)
+                    st.session_state.activities = ensure_derived_columns(st.session_state.activities)
+                    log_change("Submitted", f"{title} ({country})")
+                    st.success(f"✅ '{title}' submitted as Pending with {weighting} weighting. "
+                               f"Go to the **Approvals tab** to review it.")
+
+        # Show last 5 submissions made in this session
+        st.markdown("##### Recently submitted in this session")
+        recent_pending = st.session_state.activities[
+            st.session_state.activities["Status"] == "Pending"
+        ].tail(5)
+        if recent_pending.empty:
+            st.caption("Nothing pending yet. Submissions will appear here and in the Approvals tab.")
+        else:
+            st.dataframe(
+                recent_pending[["Title", "Type", "Country", "Initiating Function", "StartDate", "Weighting"]],
+                use_container_width=True, hide_index=True
+            )
     except Exception as e:
         st.error(f"Submit form could not render: {e}")
 
@@ -845,6 +898,7 @@ with tab_upload:
                         if "Weighting" not in v_df.columns: v_df["Weighting"] = "Medium"
                         st.session_state.activities = pd.concat([st.session_state.activities, v_df], ignore_index=True)
                         st.session_state.activities = normalize_status(st.session_state.activities)
+                        st.session_state.activities = ensure_derived_columns(st.session_state.activities)
                         log_change("Mass upload (partial)", f"Loaded {len(valid)} valid activities, skipped {len(errors)}")
                         st.success(f"Loaded {len(valid)} valid activities.")
                         st.rerun()
@@ -857,6 +911,7 @@ with tab_upload:
                     if "Weighting" not in new_df.columns: new_df["Weighting"] = "Medium"
                     st.session_state.activities = pd.concat([st.session_state.activities, new_df], ignore_index=True)
                     st.session_state.activities = normalize_status(st.session_state.activities)
+                    st.session_state.activities = ensure_derived_columns(st.session_state.activities)
                     log_change("Mass upload", f"Loaded {len(new_df)} activities")
                     st.success(f"Loaded {len(new_df)} activities into the calendar.")
                     st.rerun()
