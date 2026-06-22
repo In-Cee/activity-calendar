@@ -278,4 +278,4 @@ with tab_gantt:
                           color_discrete_map=FUNCTION_COLORS,
                           hover_data=["Country", "Type", "Weighting", "Status", "Note"])
         fig.update_yaxes(autorange="reversed")
-        fig.update_layout(height=max(500, len(view) * 18), plot_bgcolor="white",
+        fig.update_layout(height=max(500, len(view) * 18), plot_bgcolor="white", margin=dict(l=20, r=20, t=20, b=20))
