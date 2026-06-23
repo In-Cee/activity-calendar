@@ -762,7 +762,7 @@ with tab_submit:
         ALL_SUBS_LABELED = []
         for f in FUNCTIONS:
             for s in SUB_FUNCTIONSALL_SUBS_LABELED.append(f"{s} ({f})")
-
+          
         with st.form("submit", clear_on_submit=True):
             st.markdown("##### 📌 Basic details")
             col1, col2 = st.columns(2)
