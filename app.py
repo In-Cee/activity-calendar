@@ -1,7 +1,6 @@
 # ============================================================
-#  Activity Calendar - Streamlit App - v0.6.3
+#  Activity Calendar - Streamlit App - v0.6.4
 #  Mastercard Foundation - Enterprise Planning
-#  Now with file-based persistence
 # ============================================================
 
 import os
@@ -56,10 +55,6 @@ st.markdown(f"""
         color: #555; border-radius: 4px;
     }}
     div[data-baseweb="tag"] {{ background-color: {FOUNDATION_ORANGE} !important; }}
-    .detail-card {{
-        background: white; border-left: 4px solid {FOUNDATION_ORANGE};
-        padding: 16px 20px; border-radius: 6px; margin: 8px 0;
-    }}
     .region-chip {{
         display: inline-block; background: white;
         border: 1px solid #E0E0E0; border-left: 4px solid {FOUNDATION_ORANGE};
@@ -67,17 +62,18 @@ st.markdown(f"""
         border-radius: 4px; font-size: 14px;
     }}
     .cal-cell {{
-        background: white; border: 1px solid #E8E8E8;
-        border-radius: 4px; padding: 6px; min-height: 90px; font-size: 11px;
+        background: white; border: 1px solid #D8D8D8;
+        border-radius: 4px; padding: 6px; min-height: 100px; font-size: 11px;
     }}
     .cal-day-num {{ font-weight: bold; color: {FOUNDATION_TEXT}; font-size: 12px; }}
     .cal-today {{ background: #FFF4E6; border: 2px solid {FOUNDATION_ORANGE}; }}
     .cal-weekend {{ background: #F5F5F0; }}
     .cal-outside {{ background: #FAFAFA; opacity: 0.5; }}
     .cal-activity {{
-        display: block; margin-top: 2px; padding: 2px 4px;
+        display: block; margin-top: 2px; padding: 3px 5px;
         border-radius: 3px; font-size: 10px; color: white;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        cursor: help;
     }}
     .exec-hero {{
         background: white; border-top: 6px solid {FOUNDATION_ORANGE};
@@ -135,7 +131,6 @@ def ensure_derived_columns(df):
     return df
 
 def build_full_dataset():
-    """Combine Excel + persisted submissions + status overrides."""
     df = pd.read_excel("activities.xlsx", sheet_name="Activities", header=1)
     df["StartDate"] = pd.to_datetime(df["StartDate"])
     df["EndDate"]   = pd.to_datetime(df["EndDate"])
@@ -143,24 +138,39 @@ def build_full_dataset():
         df["Status"] = "Approved"
     if "Weighting" not in df.columns:
         df["Weighting"] = "Medium"
-
     subs = load_submissions()
     if not subs.empty:
         df = pd.concat([df, subs], ignore_index=True)
-
     overrides = load_status_overrides()
     if overrides:
-        for _, row in df.iterrows():
+        for i, row in df.iterrows():
             key = make_key(row.get("Title", ""), row.get("StartDate", ""))
             if key in overrides:
-                df.at[_, "Status"] = overrides[key]
-
+                df.at[i, "Status"] = overrides[key]
     df = normalize_status(df)
     df = ensure_derived_columns(df)
     return df
 
-# Always rebuild the full dataset from disk on every rerun.
-# This makes the app immune to session state resets.
+def activity_tooltip(row):
+    """Build a rich HTML tooltip for hover."""
+    parts = [
+        f"{row.get('Title', '')}",
+        f"Type: {row.get('Type', '')}",
+        f"Location: {row.get('Location', '')}",
+        f"Dates: {pd.to_datetime(row['StartDate']).strftime('%b %d, %Y')} - {pd.to_datetime(row['EndDate']).strftime('%b %d, %Y')}",
+        f"Host: {row.get('Initiating Function', '')} ({row.get('Initiating Sub-Function', '')})",
+        f"Attendees: {row.get('Attendee Category', '')}",
+        f"Mode: {row.get('Internal/External', '')}",
+        f"Status: {row.get('Status', '')} | Weighting: {row.get('Weighting', '')}",
+    ]
+    part = str(row.get("Participating Function", ""))
+    if part and part.lower() != "nan":
+        parts.append(f"Participating: {part}")
+    note = str(row.get("Note", ""))
+    if note and note.lower() != "nan":
+        parts.append(f"Note: {note}")
+    return " | ".join(parts).replace("'", "").replace('"', "")
+
 st.session_state.activities = build_full_dataset()
 df = st.session_state.activities
 
@@ -183,7 +193,7 @@ with st.sidebar:
                             min_value=min_d, max_value=max_d)
 
     st.markdown("---")
-    st.caption(f"v0.6.3 - {len(df)} activities loaded - {df['Country'].nunique()} countries")
+    st.caption(f"v0.6.4 - {len(df)} activities loaded - {df['Country'].nunique()} countries")
     if ENABLE_LOGIN:
         if st.button("Sign out"):
             st.session_state.auth_ok = False
@@ -206,28 +216,35 @@ if isinstance(f_dates, tuple) and len(f_dates) == 2:
     mask &= (df["StartDate"].dt.date >= start) & (df["StartDate"].dt.date <= end)
 view = df[mask].copy()
 
+# ============================================================
+#  Tabs (Dashboard merged - no separate Exec Brief)
+# ============================================================
 if view_mode == "Executive":
-    (tab_brief, tab_dashboard, tab_calendar, tab_heatmap, tab_gantt,
+    (tab_dashboard, tab_calendar, tab_heatmap, tab_gantt,
      tab_location, tab_approvals, tab_submit, tab_upload, tab_settings) = st.tabs(
-        ["📋 Exec Brief", "📈 Dashboard", "📅 Calendar", "🔥 Heatmap", "📊 Gantt",
+        ["📈 Dashboard", "📅 Calendar", "🔥 Heatmap", "📊 Gantt",
          "📍 Location", "✅ Approvals", "➕ Submit", "📤 Mass Upload", "⚙️ Settings"]
     )
 else:
-    (tab_calendar, tab_heatmap, tab_gantt, tab_location, tab_dashboard,
-     tab_brief, tab_approvals, tab_submit, tab_upload, tab_settings) = st.tabs(
-        ["📅 Calendar", "🔥 Heatmap", "📊 Gantt", "📍 Location", "📈 Dashboard",
-         "📋 Exec Brief", "✅ Approvals", "➕ Submit", "📤 Mass Upload", "⚙️ Settings"]
+    (tab_calendar, tab_heatmap, tab_gantt, tab_location,
+     tab_dashboard, tab_approvals, tab_submit, tab_upload, tab_settings) = st.tabs(
+        ["📅 Calendar", "🔥 Heatmap", "📊 Gantt", "📍 Location",
+         "📈 Dashboard", "✅ Approvals", "➕ Submit", "📤 Mass Upload", "⚙️ Settings"]
     )
 
 ENT_ELEV, ENT_CRIT = get_thresholds()
 
-with tab_brief:
+# ============================================================
+#  Tab: Dashboard (now includes the Exec Brief hero + exports)
+# ============================================================
+with tab_dashboard:
     try:
         total = len(view)
         approved = int((view["Status"] == "Approved").sum())
         pending  = int((view["Status"] == "Pending").sum())
         high_w   = int((view["Weighting"] == "High").sum())
         countries = view["Country"].nunique()
+
         narrative_plain = ""; top_func = "-"; top_country = "-"
         if total > 0:
             top_func = view["Initiating Function"].value_counts().idxmax()
@@ -244,19 +261,19 @@ with tab_brief:
                 f"leads activity volume ({top_country_n}). {high_pct:.0f}% of work is High weighting. "
                 f"Peak month: {peak_month}."
             )
-            narrative_html = narrative_plain
         else:
             narrative_plain = "No activities match the current filters."
-            narrative_html = narrative_plain
 
+        # Executive hero card
         st.markdown(f"""
 <div class='exec-hero'>
 <p style='color:#888; font-size:12px; margin:0 0 4px 0;'>EXECUTIVE BRIEF · {date.today().strftime('%d %B %Y')}</p>
 <h2>What you need to know</h2>
-<p>{narrative_html}</p>
+<p>{narrative_plain}</p>
 </div>
 """, unsafe_allow_html=True)
 
+        # KPI strip
         c1, c2, c3, c4, c5 = st.columns(5)
         kpi_with_tooltip(c1, "Total activities", total)
         kpi_with_tooltip(c2, "Approved", approved, f"{approved/max(total,1)*100:.0f}%")
@@ -271,48 +288,80 @@ with tab_brief:
             by_month = v.groupby(["Month", "Type"]).size().reset_index(name="Count")
             fig = px.bar(by_month, x="Month", y="Count", color="Type", barmode="stack",
                          color_discrete_map=TYPE_COLORS)
-            fig.update_layout(plot_bgcolor="white", height=340, margin=dict(l=20, r=20, t=20, b=20))
+            fig.update_layout(plot_bgcolor="white", height=380, margin=dict(l=20, r=20, t=20, b=20),
+                              xaxis=dict(showgrid=True, gridcolor="#EEE"),
+                              yaxis=dict(showgrid=True, gridcolor="#EEE"))
             st.plotly_chart(fig, use_container_width=True)
-    except Exception as e:
-        st.error(f"Exec Brief could not render: {e}")
 
-with tab_dashboard:
-    st.subheader("Executive Dashboard")
-    try:
-        c1, c2, c3, c4, c5 = st.columns(5)
-        total = len(view)
-        approved = int((view["Status"] == "Approved").sum())
-        pending  = int((view["Status"] == "Pending").sum())
-        high_w   = int((view["Weighting"] == "High").sum())
-        countries = view["Country"].nunique()
-        kpi_with_tooltip(c1, "Total activities", total)
-        kpi_with_tooltip(c2, "Approved", approved, f"{approved/max(total,1)*100:.0f}%")
-        kpi_with_tooltip(c3, "Pending", pending, f"{pending/max(total,1)*100:.0f}%")
-        kpi_with_tooltip(c4, "High weighting", high_w)
-        kpi_with_tooltip(c5, "Countries", countries)
+            chart_title_with_explainer("priority", "####")
+            by_w = view["Weighting"].value_counts().reset_index()
+            by_w.columns = ["Weighting", "Count"]
+            fig = px.pie(by_w, values="Count", names="Weighting", hole=0.5,
+                         color_discrete_sequence=[FOUNDATION_ORANGE, FOUNDATION_AMBER, FOUNDATION_GREEN])
+            fig.update_layout(height=320, margin=dict(l=20, r=20, t=20, b=20))
+            st.plotly_chart(fig, use_container_width=True)
+            insight(f"{high_pct:.0f}% of activities are High weighting. "
+                    f"{'Healthy strategic focus.' if high_pct >= 30 else 'Consider lifting more activities to High to sharpen focus.'}")
 
-        if total > 0:
-            top_func = view["Initiating Function"].value_counts().idxmax()
-            top_func_n = int(view["Initiating Function"].value_counts().max())
-            peak_month = view.assign(M=view["StartDate"].dt.to_period("M").astype(str))["M"].value_counts().idxmax()
-            insight(
-                f"As of today, {total} activities are planned across {countries} countries. "
-                f"{approved} are approved ({approved/total*100:.0f}%), {pending} pending. "
-                f"{top_func} is the most active function with {top_func_n} activities. "
-                f"Peak month: {peak_month}."
+            # Functions needing attention
+            st.markdown("#### Functions needing attention")
+            v2 = view.copy()
+            v2["Week"] = v2["StartDate"].dt.to_period("W").apply(lambda p: p.start_time)
+            heat = v2.groupby(["Week", "Initiating Function"]).size().reset_index(name="Count")
+            pivot = heat.pivot(index="Week", columns="Initiating Function", values="Count").fillna(0)
+            attention = []
+            for func in pivot.columns:
+                peak = int(pivot[func].max())
+                elev, crit = get_thresholds(func)
+                if peak >= crit:
+                    attention.append([func, peak, "🔴 Critical", elev, crit])
+                elif peak >= elev:
+                    attention.append([func, peak, "🟠 Elevated", elev, crit])
+            attention_df = pd.DataFrame(attention,
+                                        columns=["Function", "Peak week", "Status", "Elevated", "Critical"])
+            if attention_df.empty:
+                st.success("✅ All functions are within comfort thresholds. No immediate action needed.")
+            else:
+                st.dataframe(attention_df, use_container_width=True, hide_index=True)
+
+            # Exports
+            st.markdown("#### 📤 Export")
+            ex1, ex2, ex3 = st.columns(3)
+            kpis_for_pptx = [
+                ("Total activities", total),
+                ("Approved", f"{approved} ({approved/max(total,1)*100:.0f}%)"),
+                ("Pending", f"{pending} ({pending/max(total,1)*100:.0f}%)"),
+                ("High weighting", high_w),
+                ("Countries", countries),
+            ]
+            pptx_buf = build_pptx(narrative_plain, kpis_for_pptx, attention_df, top_func, top_country)
+            ex1.download_button(
+                "🎨 Download PowerPoint",
+                data=pptx_buf,
+                file_name=f"Activity_Calendar_ExecBrief_{date.today().isoformat()}.pptx",
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                use_container_width=True,
             )
-        chart_title_with_explainer("busiest", "####")
-        if not view.empty:
-            v = view.copy()
-            v["Month"] = v["StartDate"].dt.to_period("M").astype(str)
-            by_month = v.groupby(["Month", "Type"]).size().reset_index(name="Count")
-            fig = px.bar(by_month, x="Month", y="Count", color="Type", barmode="stack",
-                         color_discrete_map=TYPE_COLORS)
-            fig.update_layout(plot_bgcolor="white", height=380, margin=dict(l=20, r=20, t=20, b=20))
-            st.plotly_chart(fig, use_container_width=True)
+            excel_buf = build_excel_export(view[[
+                "StartDate", "EndDate", "Type", "Title", "Location", "Country",
+                "Initiating Function", "Initiating Sub-Function",
+                "Attendee Category", "Participating Function",
+                "Internal/External", "Status", "Weighting", "Note"
+            ]])
+            ex2.download_button(
+                "📊 Download Excel (current view)",
+                data=excel_buf,
+                file_name=f"Activity_Calendar_{date.today().isoformat()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+            ex3.caption("📄 For PDF: press Ctrl+P → Save as PDF.")
     except Exception as e:
         st.error(f"Dashboard could not render: {e}")
 
+# ============================================================
+#  Tab: Calendar (List, Month, Week)
+# ============================================================
 with tab_calendar:
     chart_title_with_explainer("calendar", "###")
     try:
@@ -320,13 +369,47 @@ with tab_calendar:
             st.info("No activities match your filters.")
         else:
             cal_view = st.radio("Calendar view", ["List", "Month", "Week"], horizontal=True, key="cal_view")
+
             if cal_view == "List":
                 st.caption(f"{len(view)} activities - {view['Country'].nunique()} countries")
-                display = view[["StartDate", "EndDate", "Type", "Title", "Country",
+                insight(f"Sortable list of {len(view)} activities. Hover any column header to sort. "
+                        f"Pick an activity below for a detailed view.")
+                display = view[["StartDate", "EndDate", "Type", "Title", "Location", "Country",
                                 "Initiating Function", "Initiating Sub-Function",
                                 "Attendee Category", "Participating Function", "Participating Sub-Function",
                                 "Internal/External", "Status", "Weighting", "Note"]].reset_index(drop=True)
                 st.dataframe(display, use_container_width=True, hide_index=True)
+
+                excel_buf = build_excel_export(display)
+                st.download_button("📊 Download Excel (filtered view)", data=excel_buf,
+                                   file_name=f"Activity_Calendar_{date.today().isoformat()}.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+                st.markdown("##### 🔍 Activity drill-down")
+                options = view.assign(
+                    _label=view["Title"].astype(str) + " - " + view["Country"].astype(str)
+                            + " - " + view["StartDate"].dt.strftime("%b %d, %Y")
+                )["_label"].tolist()
+                pick = st.selectbox("Pick an activity to see full details", options=[""] + options)
+                if pick:
+                    row = view.assign(
+                        _label=view["Title"].astype(str) + " - " + view["Country"].astype(str)
+                                + " - " + view["StartDate"].dt.strftime("%b %d, %Y")
+                    ).query("_label == @pick").iloc[0]
+                    st.markdown(f"""
+<div style='background:white; border-left:4px solid {FOUNDATION_ORANGE}; padding:16px 20px; border-radius:6px;'>
+<h4 style='color:{FOUNDATION_ORANGE}; margin-top:0;'>{flag(row['Country'])} {row['Title']}</h4>
+<p style='color:#666;'><strong>{row['Type']}</strong> - {row['Location']} - {row['StartDate'].strftime('%b %d')} to {row['EndDate'].strftime('%b %d, %Y')}</p>
+<p><strong>Host:</strong> {row['Initiating Function']} ({row['Initiating Sub-Function']})<br>
+<strong>Participating:</strong> {row['Participating Function'] if str(row['Participating Function']) != 'nan' else 'None'}<br>
+<strong>Participating sub-functions:</strong> {row.get('Participating Sub-Function','') if str(row.get('Participating Sub-Function','')) != 'nan' else 'None'}<br>
+<strong>Attendees:</strong> {row['Attendee Category']}<br>
+<strong>Mode:</strong> {row['Internal/External']}<br>
+<strong>Status:</strong> {row['Status']} - <strong>Weighting:</strong> {row['Weighting']}</p>
+<p style='color:#444;'><em>{row['Note'] if str(row['Note']) != 'nan' else ''}</em></p>
+</div>
+""", unsafe_allow_html=True)
+
             elif cal_view == "Month":
                 months = sorted(view["StartDate"].dt.to_period("M").unique())
                 month_labels = {m: m.strftime("%B %Y") for m in months}
@@ -335,7 +418,8 @@ with tab_calendar:
                 first_weekday, days_in_month = cal.monthrange(year, month)
                 today = date.today()
                 month_acts = view[(view["StartDate"].dt.year == year) & (view["StartDate"].dt.month == month)].copy()
-                insight(f"{len(month_acts)} activities in {month_labels[pick_m]}.")
+                insight(f"{len(month_acts)} activities in {month_labels[pick_m]}. Hover any activity for full details.")
+
                 dow_cols = st.columns(7)
                 for i, dname in enumerate(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
                     dow_cols[i].markdown(f"**{dname}**")
@@ -356,13 +440,23 @@ with tab_calendar:
                             for _, a in day_acts.head(4).iterrows():
                                 colr = TYPE_COLORS.get(a["Type"], "#999")
                                 title_short = (a["Title"][:22] + "…") if len(str(a["Title"])) > 22 else a["Title"]
-                                inner += f"<span class='cal-activity' style='background:{colr};'>{title_short}</span>"
+                                tooltip = activity_tooltip(a)
+                                inner += f"<span class='cal-activity' style='background:{colr};' title='{tooltip}'>{title_short}</span>"
+                            if len(day_acts) > 4:
+                                inner += f"<span style='font-size:10px;color:#888;'>+{len(day_acts)-4} more</span>"
                             week_cols[i].markdown(f"<div class='{cls}'>{inner}</div>", unsafe_allow_html=True)
                             day += 1
                         else:
                             week_cols[i].markdown("<div class='cal-cell cal-outside'></div>", unsafe_allow_html=True)
                     if day > days_in_month: done = True
-            else:
+
+                st.markdown("##### Legend")
+                legend_html = ""
+                for t, c in TYPE_COLORS.items():
+                    legend_html += f"<span class='cal-activity' style='background:{c}; padding:4px 10px;'>{t}</span> "
+                st.markdown(legend_html, unsafe_allow_html=True)
+
+            else:  # Week view
                 weeks = sorted(view["StartDate"].dt.to_period("W").unique())
                 week_labels = {w: f"Week of {w.start_time.strftime('%b %d, %Y')}" for w in weeks}
                 pick_w = st.selectbox("Week", weeks, format_func=lambda w: week_labels[w], key="cal_week")
@@ -371,7 +465,7 @@ with tab_calendar:
                     (view["StartDate"].dt.date >= start_of_week)
                     & (view["StartDate"].dt.date <= start_of_week + timedelta(days=6))
                 ]
-                insight(f"{len(week_acts)} activities in {week_labels[pick_w]}.")
+                insight(f"{len(week_acts)} activities in {week_labels[pick_w]}. Hover any activity for full details.")
                 day_cols = st.columns(7)
                 for i in range(7):
                     d = start_of_week + timedelta(days=i)
@@ -383,11 +477,15 @@ with tab_calendar:
                     inner = f"<span class='cal-day-num'>{dname}</span>"
                     for _, a in day_acts.iterrows():
                         colr = TYPE_COLORS.get(a["Type"], "#999")
-                        inner += f"<span class='cal-activity' style='background:{colr};'>{a['Title']}</span>"
-                    day_cols[i].markdown(f"<div class='{cls}' style='min-height:200px;'>{inner}</div>", unsafe_allow_html=True)
+                        tooltip = activity_tooltip(a)
+                        inner += f"<span class='cal-activity' style='background:{colr};' title='{tooltip}'>{a['Title']} {flag(a['Country'])}</span>"
+                    day_cols[i].markdown(f"<div class='{cls}' style='min-height:240px;'>{inner}</div>", unsafe_allow_html=True)
     except Exception as e:
         st.error(f"Calendar could not render: {e}")
 
+# ============================================================
+#  Tab: Heatmap (with cell borders)
+# ============================================================
 with tab_heatmap:
     chart_title_with_explainer("pressure", "###")
     try:
@@ -398,10 +496,40 @@ with tab_heatmap:
             v["Week"] = v["StartDate"].dt.to_period("W").apply(lambda p: p.start_time)
             heat = v.groupby(["Week", "Initiating Function"]).size().reset_index(name="Count")
             pivot = heat.pivot(index="Week", columns="Initiating Function", values="Count").fillna(0)
-            fig = px.imshow(pivot.T, color_continuous_scale="Oranges",
-                            labels=dict(x="Week", y="Function", color="Activities"), aspect="auto")
-            fig.update_layout(height=420, margin=dict(l=20, r=20, t=20, b=20), plot_bgcolor="white")
+            critical_hits = []; elevated_hits = []
+            for func in pivot.columns:
+                elev, crit = get_thresholds(func)
+                peak = int(pivot[func].max())
+                if peak >= crit: critical_hits.append((func, peak, crit))
+                elif peak >= elev: elevated_hits.append((func, peak, elev))
+
+            if critical_hits:
+                insight(f"⚠️ Critical pressure: {len(critical_hits)} function(s) above their Critical thresholds. Action needed.")
+            elif elevated_hits:
+                insight(f"Elevated pressure: {len(elevated_hits)} function(s) above their Elevated thresholds. Monitor closely.")
+            else:
+                insight(f"Workload is balanced - all functions within their comfort thresholds.")
+
+            # Heatmap with visible cell borders and gridlines
+            fig = px.imshow(
+                pivot.T,
+                color_continuous_scale="Oranges",
+                labels=dict(x="Week", y="Function", color="Activities"),
+                aspect="auto",
+                text_auto=True,
+            )
+            fig.update_traces(
+                xgap=2, ygap=2,  # Cell separation
+                textfont=dict(size=11, color="#2B2B2B"),
+            )
+            fig.update_layout(
+                height=460, margin=dict(l=20, r=20, t=20, b=20),
+                plot_bgcolor="white", paper_bgcolor="white",
+                xaxis=dict(showgrid=True, gridcolor="#EEE", showline=True, linecolor="#D0D0D0"),
+                yaxis=dict(showgrid=True, gridcolor="#EEE", showline=True, linecolor="#D0D0D0"),
+            )
             st.plotly_chart(fig, use_container_width=True)
+            st.caption(f"Enterprise default thresholds - Elevated >= {ENT_ELEV}, Critical >= {ENT_CRIT}.")
 
             st.markdown("##### Functions needing attention")
             rows = []
@@ -411,12 +539,41 @@ with tab_heatmap:
                 if peak >= crit: status = "🔴 Critical"
                 elif peak >= elev: status = "🟠 Elevated"
                 else: status = "🟢 Balanced"
-                rows.append([func, total, peak, elev, crit, status])
-            ft = pd.DataFrame(rows, columns=["Function", "Total", "Peak week", "Elevated", "Critical", "Status"])
+                action = ("Reschedule peak weeks" if peak >= crit
+                          else ("Monitor peak weeks" if peak >= elev else "No action needed"))
+                rows.append([func, total, peak, elev, crit, status, action])
+            ft = pd.DataFrame(rows, columns=["Function", "Total", "Peak week", "Elevated", "Critical", "Status", "Action"])
             st.dataframe(ft.sort_values("Peak week", ascending=False), use_container_width=True, hide_index=True)
+
+            st.markdown("##### Busiest weeks")
+            week_totals = pivot.sum(axis=1).reset_index()
+            week_totals.columns = ["Week", "Total"]
+            week_totals = week_totals.sort_values("Total", ascending=False).head(10)
+            week_totals["Week"] = pd.to_datetime(week_totals["Week"]).dt.strftime("Week of %b %d, %Y")
+            st.dataframe(week_totals, use_container_width=True, hide_index=True)
+
+            st.markdown("##### 🔍 Pressure point drill-down")
+            d1, d2 = st.columns(2)
+            with d1:
+                pick_func = st.selectbox("Function", FUNCTIONS, key="hm_func")
+            with d2:
+                week_options = sorted(v["Week"].unique())
+                week_labels = {w: pd.to_datetime(w).strftime("Week of %b %d, %Y") for w in week_options}
+                pick_week = st.selectbox("Week", options=week_options, format_func=lambda w: week_labels[w], key="hm_week")
+            cell_rows = v[(v["Initiating Function"] == pick_func) & (v["Week"] == pick_week)]
+            if cell_rows.empty:
+                st.caption(f"No {pick_func} activities in {week_labels[pick_week]}.")
+            else:
+                st.caption(f"{len(cell_rows)} {pick_func} activities in {week_labels[pick_week]}")
+                st.dataframe(cell_rows[["Title", "Location", "Country", "StartDate", "EndDate", "Type",
+                                         "Attendee Category", "Status", "Weighting"]],
+                             use_container_width=True, hide_index=True)
     except Exception as e:
         st.error(f"Heatmap could not render: {e}")
 
+# ============================================================
+#  Tab: Gantt (with gridlines + alternating row bands)
+# ============================================================
 with tab_gantt:
     chart_title_with_explainer("gantt", "###")
     try:
@@ -425,46 +582,108 @@ with tab_gantt:
         else:
             MAX_ROWS = 80
             g = view.sort_values("StartDate").head(MAX_ROWS).copy()
-            g["Label"] = (g["Title"].astype(str) + " - " + g["Country"].astype(str)
-                          + " - " + g["StartDate"].dt.strftime("%b %d"))
-            fig = px.timeline(g, x_start="StartDate", x_end="EndDate", y="Label",
-                              color="Initiating Function", color_discrete_map=FUNCTION_COLORS)
+            g["Label"] = (g["Title"].astype(str) + " · " + g["Country"].astype(str)
+                          + " · " + g["StartDate"].dt.strftime("%b %d"))
+            if len(view) > MAX_ROWS:
+                insight(f"Showing the first {MAX_ROWS} of {len(view)} activities (sorted by date). Use filters to narrow.")
+            else:
+                insight(f"Showing {len(g)} activities. Hover any bar for full details.")
+
+            fig = px.timeline(
+                g, x_start="StartDate", x_end="EndDate", y="Label",
+                color="Initiating Function", color_discrete_map=FUNCTION_COLORS,
+                hover_data={
+                    "Location": True, "Type": True, "Initiating Sub-Function": True,
+                    "Attendee Category": True, "Internal/External": True,
+                    "Status": True, "Weighting": True, "Note": True,
+                    "Label": False
+                },
+            )
             fig.update_yaxes(autorange="reversed")
-            fig.update_layout(height=max(500, len(g) * 22), plot_bgcolor="white",
-                              margin=dict(l=20, r=20, t=20, b=20))
+            fig.update_traces(marker_line_color="white", marker_line_width=1)
+            fig.update_layout(
+                height=max(500, len(g) * 24),
+                plot_bgcolor="white", paper_bgcolor="white",
+                margin=dict(l=20, r=20, t=20, b=20),
+                xaxis=dict(
+                    showgrid=True, gridcolor="#E5E5E5", gridwidth=1,
+                    showline=True, linecolor="#D0D0D0",
+                    tickformat="%b %d", dtick="M1",
+                ),
+                yaxis=dict(
+                    showgrid=True, gridcolor="#F0F0F0", gridwidth=1,
+                    showline=True, linecolor="#D0D0D0",
+                ),
+                bargap=0.3,
+            )
+            # Alternating row shading for readability
+            for i in range(0, len(g), 2):
+                fig.add_hrect(
+                    y0=i - 0.5, y1=i + 0.5,
+                    fillcolor="#FAFAFA", layer="below", line_width=0,
+                )
             st.plotly_chart(fig, use_container_width=True)
     except Exception as e:
         st.error(f"Gantt could not render: {e}")
 
+# ============================================================
+#  Tab: Location
+# ============================================================
 with tab_location:
     chart_title_with_explainer("location", "###")
     try:
         if view.empty:
             st.info("No activities match your filters.")
         else:
+            by_region = (view.groupby("Region").size().reset_index(name="Activities")
+                            .sort_values("Activities", ascending=False))
+            top_country = view["Country"].value_counts().idxmax()
+            top_country_n = int(view["Country"].value_counts().max())
+            if not by_region.empty:
+                top_region = by_region.iloc[0]["Region"]
+                top_region_n = int(by_region.iloc[0]["Activities"])
+                insight(f"{flag(top_country)} {top_country} leads activity volume ({top_country_n} activities). "
+                        f"{top_region} region carries {top_region_n/len(view)*100:.0f}% of total load.")
+
+            st.markdown("##### Regional roll-up")
+            chips_html = ""
+            for _, r in by_region.iterrows():
+                share = r["Activities"] / len(view) * 100
+                chips_html += (f"<span class='region-chip'><strong>{r['Region']}</strong> · "
+                               f"{r['Activities']} activities · {share:.0f}%</span>")
+            st.markdown(chips_html, unsafe_allow_html=True)
+
+            st.markdown("##### By country")
             by_country = (view.groupby("Country").size().reset_index(name="Activities")
                              .sort_values("Activities", ascending=True))
             by_country["Country with flag"] = by_country["Country"].apply(lambda c: f"{flag(c)} {c}")
             fig = px.bar(by_country, x="Activities", y="Country with flag", orientation="h",
-                         color_discrete_sequence=[FOUNDATION_ORANGE])
-            fig.update_layout(height=max(400, len(by_country)*24), plot_bgcolor="white",
-                              margin=dict(l=20, r=20, t=20, b=20))
+                         color_discrete_sequence=[FOUNDATION_ORANGE], text="Activities")
+            fig.update_traces(textposition="outside")
+            fig.update_layout(
+                height=max(400, len(by_country)*24), plot_bgcolor="white",
+                margin=dict(l=20, r=20, t=20, b=20),
+                xaxis=dict(showgrid=True, gridcolor="#EEE"),
+                yaxis=dict(showgrid=False),
+            )
             st.plotly_chart(fig, use_container_width=True)
     except Exception as e:
         st.error(f"Location could not render: {e}")
 
+# ============================================================
+#  Tab: Approvals
+# ============================================================
 with tab_approvals:
     st.subheader("✅ Approvals queue")
     try:
         all_acts = df.copy()
         pending_df = all_acts[all_acts["Status"] == "Pending"].copy()
-        st.caption(f"{len(pending_df)} activities awaiting review (loaded from disk + session).")
+        st.caption(f"{len(pending_df)} activities awaiting review (loaded from disk + Excel).")
 
         with st.expander("🔍 Status diagnostic"):
             status_counts = all_acts["Status"].value_counts().reset_index()
             status_counts.columns = ["Status", "Count"]
             st.dataframe(status_counts, use_container_width=True, hide_index=True)
-            st.caption(f"Total activities: {len(all_acts)}.")
             st.markdown("**Last 5 in dataset:**")
             st.dataframe(all_acts.tail(5)[["Title", "Status", "Initiating Function", "StartDate"]],
                          use_container_width=True, hide_index=True)
@@ -478,10 +697,10 @@ with tab_approvals:
                     c1, c2, c3 = st.columns([4, 2, 2])
                     with c1:
                         st.markdown(f"**{flag(row.get('Country',''))} {row['Title']}**")
-                        st.caption(f"{row['Type']} · {row.get('Country','')} · "
+                        st.caption(f"{row['Type']} · {row.get('Location','')} · "
                                    f"{pd.to_datetime(row['StartDate']).strftime('%b %d')} - "
                                    f"{pd.to_datetime(row['EndDate']).strftime('%b %d, %Y')}")
-                        st.caption(f"Hosting: {row['Initiating Function']} ({row['Initiating Sub-Function']}) · "
+                        st.caption(f"Host: {row['Initiating Function']} ({row['Initiating Sub-Function']}) · "
                                    f"Weighting: {row['Weighting']}")
                         part = str(row.get("Participating Function", ""))
                         if part and part.lower() != "nan":
@@ -502,10 +721,17 @@ with tab_approvals:
     except Exception as e:
         st.error(f"Approvals could not render: {e}")
 
+# ============================================================
+#  Tab: Submit (with clearer Participating Sub-Function picker)
+# ============================================================
 with tab_submit:
     st.subheader("Submit a new activity")
     try:
-        ALL_SUBS = sorted({s for lst in SUB_FUNCTIONS.values() for s in lst})
+        # Build sub-function list with parent function in brackets, grouped
+        ALL_SUBS_LABELED = []
+        for f in FUNCTIONS:
+            for s in SUB_FUNCTIONS[f]:
+                ALL_SUBS_LABELED.append(f"{s} ({f})")
 
         with st.form("submit", clear_on_submit=True):
             col1, col2 = st.columns(2)
@@ -520,8 +746,13 @@ with tab_submit:
 
             st.markdown("##### Participating teams (optional)")
             part_funcs = st.multiselect("Participating Function(s)",
-                                        [f for f in FUNCTIONS if f != func])
-            part_subs  = st.multiselect("Participating Sub-Function(s)", ALL_SUBS)
+                                        [f for f in FUNCTIONS if f != func],
+                                        help="Other functions involved as participants, not hosts.")
+            part_subs_labeled = st.multiselect("Participating Sub-Function(s)",
+                                                ALL_SUBS_LABELED,
+                                                help="All 17 sub-functions across all functions are available here.")
+            # Strip the "(Function)" suffix before saving
+            part_subs = [s.rsplit(" (", 1)[0] for s in part_subs_labeled]
 
             col3, col4 = st.columns(2)
             delivery  = col3.selectbox("Internal/External", DELIVERY_MODE)
@@ -564,12 +795,15 @@ with tab_submit:
             st.caption("No persisted submissions yet.")
         else:
             st.dataframe(
-                subs[["Title", "Type", "Country", "Initiating Function", "StartDate", "Status", "Weighting"]].tail(10),
+                subs[["Title", "Type", "Location", "Initiating Function", "StartDate", "Status", "Weighting"]].tail(10),
                 use_container_width=True, hide_index=True
             )
     except Exception as e:
         st.error(f"Submit form could not render: {e}")
 
+# ============================================================
+#  Tab: Mass Upload
+# ============================================================
 with tab_upload:
     st.subheader("Mass upload")
     try:
@@ -583,10 +817,14 @@ with tab_upload:
         upload = st.file_uploader("Choose Excel file", type=["xlsx"])
         if upload:
             new_df = pd.read_excel(upload, sheet_name="Activities", header=1)
-            st.success(f"Parsed {len(new_df)} rows. Use the Submit tab to add individual rows for now.")
+            st.success(f"Parsed {len(new_df)} rows. Use the Submit tab to add individual rows for now, or "
+                       f"contact admin to bulk-load into persistence.")
     except Exception as e:
         st.error(f"Mass Upload could not render: {e}")
 
+# ============================================================
+#  Tab: Settings
+# ============================================================
 with tab_settings:
     st.subheader("⚙️ Workload comfort thresholds")
     try:
