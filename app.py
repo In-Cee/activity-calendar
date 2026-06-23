@@ -1,6 +1,8 @@
 # ============================================================
-#  Activity Calendar - Streamlit App - v0.6.4
+#  Activity Calendar - Streamlit App - v0.6.5
 #  Mastercard Foundation - Enterprise Planning
+#  Host vs Participating made clear throughout
+#  Gantt hover shows full Host + Participating detail
 # ============================================================
 
 import os
@@ -82,6 +84,7 @@ st.markdown(f"""
     }}
     .exec-hero h2 {{ color: {FOUNDATION_ORANGE}; margin: 0 0 8px 0; }}
     .exec-hero p {{ font-size: 15px; color: #444; line-height: 1.55; margin: 0; }}
+    .label-help {{ color: #888; font-size: 11px; font-style: italic; }}
     @media print {{
         .stSidebar, [data-testid="stSidebar"], .stTabs {{ display: none !important; }}
     }}
@@ -151,21 +154,27 @@ def build_full_dataset():
     df = ensure_derived_columns(df)
     return df
 
+def fmt_part(value):
+    """Format Participating value for display - never show 'nan' or empty."""
+    s = str(value)
+    if not s or s.strip().lower() in ("nan", "none", ""):
+        return "None"
+    return s
+
 def activity_tooltip(row):
-    """Build a rich HTML tooltip for hover."""
+    """Build a rich HTML tooltip for hover cells in the calendar."""
     parts = [
         f"{row.get('Title', '')}",
         f"Type: {row.get('Type', '')}",
         f"Location: {row.get('Location', '')}",
         f"Dates: {pd.to_datetime(row['StartDate']).strftime('%b %d, %Y')} - {pd.to_datetime(row['EndDate']).strftime('%b %d, %Y')}",
-        f"Host: {row.get('Initiating Function', '')} ({row.get('Initiating Sub-Function', '')})",
+        f"HOST: {row.get('Initiating Function', '')} - {row.get('Initiating Sub-Function', '')}",
+        f"PARTICIPATING: {fmt_part(row.get('Participating Function', ''))}",
+        f"Participating Sub: {fmt_part(row.get('Participating Sub-Function', ''))}",
         f"Attendees: {row.get('Attendee Category', '')}",
         f"Mode: {row.get('Internal/External', '')}",
         f"Status: {row.get('Status', '')} | Weighting: {row.get('Weighting', '')}",
     ]
-    part = str(row.get("Participating Function", ""))
-    if part and part.lower() != "nan":
-        parts.append(f"Participating: {part}")
     note = str(row.get("Note", ""))
     if note and note.lower() != "nan":
         parts.append(f"Note: {note}")
@@ -176,11 +185,14 @@ df = st.session_state.activities
 
 with st.sidebar:
     st.markdown("### 🔍 Filters")
+    st.caption("**Host** = function leading the activity. **Participating** = other functions joining.")
+
     f_type = st.multiselect("Type", TYPES, default=TYPES)
-    f_hosting = st.multiselect("Hosting function", FUNCTIONS, default=FUNCTIONS)
+    f_hosting = st.multiselect("Host Function (lead)", FUNCTIONS, default=FUNCTIONS,
+                                help="The function HOSTING / LEADING the activity.")
     f_participating = st.multiselect(
-        "Participating function", FUNCTIONS,
-        help="Filter activities where any of the chosen functions are participating."
+        "Participating Function (joining)", FUNCTIONS,
+        help="Functions JOINING as participants, not hosting. Leave empty to show all."
     )
     f_country = st.multiselect("Country", sorted(df["Country"].dropna().unique()))
     f_region = st.multiselect("Region", sorted(df["Region"].dropna().unique()))
@@ -193,7 +205,7 @@ with st.sidebar:
                             min_value=min_d, max_value=max_d)
 
     st.markdown("---")
-    st.caption(f"v0.6.4 - {len(df)} activities loaded - {df['Country'].nunique()} countries")
+    st.caption(f"v0.6.5 - {len(df)} activities loaded - {df['Country'].nunique()} countries")
     if ENABLE_LOGIN:
         if st.button("Sign out"):
             st.session_state.auth_ok = False
@@ -216,9 +228,6 @@ if isinstance(f_dates, tuple) and len(f_dates) == 2:
     mask &= (df["StartDate"].dt.date >= start) & (df["StartDate"].dt.date <= end)
 view = df[mask].copy()
 
-# ============================================================
-#  Tabs (Dashboard merged - no separate Exec Brief)
-# ============================================================
 if view_mode == "Executive":
     (tab_dashboard, tab_calendar, tab_heatmap, tab_gantt,
      tab_location, tab_approvals, tab_submit, tab_upload, tab_settings) = st.tabs(
@@ -235,7 +244,7 @@ else:
 ENT_ELEV, ENT_CRIT = get_thresholds()
 
 # ============================================================
-#  Tab: Dashboard (now includes the Exec Brief hero + exports)
+#  Tab: Dashboard
 # ============================================================
 with tab_dashboard:
     try:
@@ -264,7 +273,6 @@ with tab_dashboard:
         else:
             narrative_plain = "No activities match the current filters."
 
-        # Executive hero card
         st.markdown(f"""
 <div class='exec-hero'>
 <p style='color:#888; font-size:12px; margin:0 0 4px 0;'>EXECUTIVE BRIEF · {date.today().strftime('%d %B %Y')}</p>
@@ -273,7 +281,6 @@ with tab_dashboard:
 </div>
 """, unsafe_allow_html=True)
 
-        # KPI strip
         c1, c2, c3, c4, c5 = st.columns(5)
         kpi_with_tooltip(c1, "Total activities", total)
         kpi_with_tooltip(c2, "Approved", approved, f"{approved/max(total,1)*100:.0f}%")
@@ -303,8 +310,8 @@ with tab_dashboard:
             insight(f"{high_pct:.0f}% of activities are High weighting. "
                     f"{'Healthy strategic focus.' if high_pct >= 30 else 'Consider lifting more activities to High to sharpen focus.'}")
 
-            # Functions needing attention
             st.markdown("#### Functions needing attention")
+            st.caption("Showing **Host functions** that exceed comfort thresholds (based on activities they are leading).")
             v2 = view.copy()
             v2["Week"] = v2["StartDate"].dt.to_period("W").apply(lambda p: p.start_time)
             heat = v2.groupby(["Week", "Initiating Function"]).size().reset_index(name="Count")
@@ -318,13 +325,12 @@ with tab_dashboard:
                 elif peak >= elev:
                     attention.append([func, peak, "🟠 Elevated", elev, crit])
             attention_df = pd.DataFrame(attention,
-                                        columns=["Function", "Peak week", "Status", "Elevated", "Critical"])
+                                        columns=["Host Function", "Peak week", "Status", "Elevated", "Critical"])
             if attention_df.empty:
-                st.success("✅ All functions are within comfort thresholds. No immediate action needed.")
+                st.success("✅ All Host functions are within comfort thresholds. No immediate action needed.")
             else:
                 st.dataframe(attention_df, use_container_width=True, hide_index=True)
 
-            # Exports
             st.markdown("#### 📤 Export")
             ex1, ex2, ex3 = st.columns(3)
             kpis_for_pptx = [
@@ -345,7 +351,7 @@ with tab_dashboard:
             excel_buf = build_excel_export(view[[
                 "StartDate", "EndDate", "Type", "Title", "Location", "Country",
                 "Initiating Function", "Initiating Sub-Function",
-                "Attendee Category", "Participating Function",
+                "Attendee Category", "Participating Function", "Participating Sub-Function",
                 "Internal/External", "Status", "Weighting", "Note"
             ]])
             ex2.download_button(
@@ -360,7 +366,7 @@ with tab_dashboard:
         st.error(f"Dashboard could not render: {e}")
 
 # ============================================================
-#  Tab: Calendar (List, Month, Week)
+#  Tab: Calendar
 # ============================================================
 with tab_calendar:
     chart_title_with_explainer("calendar", "###")
@@ -371,13 +377,21 @@ with tab_calendar:
             cal_view = st.radio("Calendar view", ["List", "Month", "Week"], horizontal=True, key="cal_view")
 
             if cal_view == "List":
-                st.caption(f"{len(view)} activities - {view['Country'].nunique()} countries")
-                insight(f"Sortable list of {len(view)} activities. Hover any column header to sort. "
-                        f"Pick an activity below for a detailed view.")
+                st.caption(f"{len(view)} activities - {view['Country'].nunique()} countries · "
+                           f"**Host** = leading function · **Participating** = joining functions")
+                insight(f"Sortable list of {len(view)} activities. Pick one below for full details.")
+
+                # Display with renamed columns for clarity
                 display = view[["StartDate", "EndDate", "Type", "Title", "Location", "Country",
                                 "Initiating Function", "Initiating Sub-Function",
                                 "Attendee Category", "Participating Function", "Participating Sub-Function",
                                 "Internal/External", "Status", "Weighting", "Note"]].reset_index(drop=True)
+                display = display.rename(columns={
+                    "Initiating Function": "Host Function",
+                    "Initiating Sub-Function": "Host Sub-Function",
+                    "Participating Function": "Participating Function(s)",
+                    "Participating Sub-Function": "Participating Sub-Function(s)",
+                })
                 st.dataframe(display, use_container_width=True, hide_index=True)
 
                 excel_buf = build_excel_export(display)
@@ -400,9 +414,9 @@ with tab_calendar:
 <div style='background:white; border-left:4px solid {FOUNDATION_ORANGE}; padding:16px 20px; border-radius:6px;'>
 <h4 style='color:{FOUNDATION_ORANGE}; margin-top:0;'>{flag(row['Country'])} {row['Title']}</h4>
 <p style='color:#666;'><strong>{row['Type']}</strong> - {row['Location']} - {row['StartDate'].strftime('%b %d')} to {row['EndDate'].strftime('%b %d, %Y')}</p>
-<p><strong>Host:</strong> {row['Initiating Function']} ({row['Initiating Sub-Function']})<br>
-<strong>Participating:</strong> {row['Participating Function'] if str(row['Participating Function']) != 'nan' else 'None'}<br>
-<strong>Participating sub-functions:</strong> {row.get('Participating Sub-Function','') if str(row.get('Participating Sub-Function','')) != 'nan' else 'None'}<br>
+<p><strong>🏛 Host Function:</strong> {row['Initiating Function']} ({row['Initiating Sub-Function']})<br>
+<strong>👥 Participating Function(s):</strong> {fmt_part(row['Participating Function'])}<br>
+<strong>👥 Participating Sub-Function(s):</strong> {fmt_part(row.get('Participating Sub-Function',''))}<br>
 <strong>Attendees:</strong> {row['Attendee Category']}<br>
 <strong>Mode:</strong> {row['Internal/External']}<br>
 <strong>Status:</strong> {row['Status']} - <strong>Weighting:</strong> {row['Weighting']}</p>
@@ -418,7 +432,8 @@ with tab_calendar:
                 first_weekday, days_in_month = cal.monthrange(year, month)
                 today = date.today()
                 month_acts = view[(view["StartDate"].dt.year == year) & (view["StartDate"].dt.month == month)].copy()
-                insight(f"{len(month_acts)} activities in {month_labels[pick_m]}. Hover any activity for full details.")
+                insight(f"{len(month_acts)} activities in {month_labels[pick_m]}. "
+                        f"Hover any activity to see Host, Participating, and full details.")
 
                 dow_cols = st.columns(7)
                 for i, dname in enumerate(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
@@ -465,7 +480,7 @@ with tab_calendar:
                     (view["StartDate"].dt.date >= start_of_week)
                     & (view["StartDate"].dt.date <= start_of_week + timedelta(days=6))
                 ]
-                insight(f"{len(week_acts)} activities in {week_labels[pick_w]}. Hover any activity for full details.")
+                insight(f"{len(week_acts)} activities in {week_labels[pick_w]}. Hover for full details.")
                 day_cols = st.columns(7)
                 for i in range(7):
                     d = start_of_week + timedelta(days=i)
@@ -484,7 +499,7 @@ with tab_calendar:
         st.error(f"Calendar could not render: {e}")
 
 # ============================================================
-#  Tab: Heatmap (with cell borders)
+#  Tab: Heatmap
 # ============================================================
 with tab_heatmap:
     chart_title_with_explainer("pressure", "###")
@@ -492,6 +507,7 @@ with tab_heatmap:
         if view.empty:
             st.info("No activities match your filters.")
         else:
+            st.caption("This heatmap shows pressure based on **Host Function** (the function leading each activity).")
             v = view.copy()
             v["Week"] = v["StartDate"].dt.to_period("W").apply(lambda p: p.start_time)
             heat = v.groupby(["Week", "Initiating Function"]).size().reset_index(name="Count")
@@ -504,24 +520,20 @@ with tab_heatmap:
                 elif peak >= elev: elevated_hits.append((func, peak, elev))
 
             if critical_hits:
-                insight(f"⚠️ Critical pressure: {len(critical_hits)} function(s) above their Critical thresholds. Action needed.")
+                insight(f"⚠️ Critical pressure: {len(critical_hits)} Host function(s) above their Critical thresholds. Action needed.")
             elif elevated_hits:
-                insight(f"Elevated pressure: {len(elevated_hits)} function(s) above their Elevated thresholds. Monitor closely.")
+                insight(f"Elevated pressure: {len(elevated_hits)} Host function(s) above their Elevated thresholds. Monitor closely.")
             else:
-                insight(f"Workload is balanced - all functions within their comfort thresholds.")
+                insight(f"Workload is balanced - all Host functions within their comfort thresholds.")
 
-            # Heatmap with visible cell borders and gridlines
             fig = px.imshow(
                 pivot.T,
                 color_continuous_scale="Oranges",
-                labels=dict(x="Week", y="Function", color="Activities"),
+                labels=dict(x="Week", y="Host Function", color="Activities"),
                 aspect="auto",
                 text_auto=True,
             )
-            fig.update_traces(
-                xgap=2, ygap=2,  # Cell separation
-                textfont=dict(size=11, color="#2B2B2B"),
-            )
+            fig.update_traces(xgap=2, ygap=2, textfont=dict(size=11, color="#2B2B2B"))
             fig.update_layout(
                 height=460, margin=dict(l=20, r=20, t=20, b=20),
                 plot_bgcolor="white", paper_bgcolor="white",
@@ -531,7 +543,7 @@ with tab_heatmap:
             st.plotly_chart(fig, use_container_width=True)
             st.caption(f"Enterprise default thresholds - Elevated >= {ENT_ELEV}, Critical >= {ENT_CRIT}.")
 
-            st.markdown("##### Functions needing attention")
+            st.markdown("##### Host functions needing attention")
             rows = []
             for func in pivot.columns:
                 elev, crit = get_thresholds(func)
@@ -542,7 +554,7 @@ with tab_heatmap:
                 action = ("Reschedule peak weeks" if peak >= crit
                           else ("Monitor peak weeks" if peak >= elev else "No action needed"))
                 rows.append([func, total, peak, elev, crit, status, action])
-            ft = pd.DataFrame(rows, columns=["Function", "Total", "Peak week", "Elevated", "Critical", "Status", "Action"])
+            ft = pd.DataFrame(rows, columns=["Host Function", "Total", "Peak week", "Elevated", "Critical", "Status", "Action"])
             st.dataframe(ft.sort_values("Peak week", ascending=False), use_container_width=True, hide_index=True)
 
             st.markdown("##### Busiest weeks")
@@ -555,24 +567,28 @@ with tab_heatmap:
             st.markdown("##### 🔍 Pressure point drill-down")
             d1, d2 = st.columns(2)
             with d1:
-                pick_func = st.selectbox("Function", FUNCTIONS, key="hm_func")
+                pick_func = st.selectbox("Host Function", FUNCTIONS, key="hm_func")
             with d2:
                 week_options = sorted(v["Week"].unique())
                 week_labels = {w: pd.to_datetime(w).strftime("Week of %b %d, %Y") for w in week_options}
                 pick_week = st.selectbox("Week", options=week_options, format_func=lambda w: week_labels[w], key="hm_week")
             cell_rows = v[(v["Initiating Function"] == pick_func) & (v["Week"] == pick_week)]
             if cell_rows.empty:
-                st.caption(f"No {pick_func} activities in {week_labels[pick_week]}.")
+                st.caption(f"No {pick_func} activities (as Host) in {week_labels[pick_week]}.")
             else:
-                st.caption(f"{len(cell_rows)} {pick_func} activities in {week_labels[pick_week]}")
-                st.dataframe(cell_rows[["Title", "Location", "Country", "StartDate", "EndDate", "Type",
-                                         "Attendee Category", "Status", "Weighting"]],
-                             use_container_width=True, hide_index=True)
+                st.caption(f"{len(cell_rows)} {pick_func}-hosted activities in {week_labels[pick_week]}")
+                drill = cell_rows[["Title", "Location", "Country", "StartDate", "EndDate", "Type",
+                                    "Initiating Sub-Function", "Participating Function",
+                                    "Attendee Category", "Status", "Weighting"]].rename(columns={
+                    "Initiating Sub-Function": "Host Sub-Function",
+                    "Participating Function": "Participating Function(s)",
+                })
+                st.dataframe(drill, use_container_width=True, hide_index=True)
     except Exception as e:
         st.error(f"Heatmap could not render: {e}")
 
 # ============================================================
-#  Tab: Gantt (with gridlines + alternating row bands)
+#  Tab: Gantt (rich hover with Host + Participating)
 # ============================================================
 with tab_gantt:
     chart_title_with_explainer("gantt", "###")
@@ -584,20 +600,39 @@ with tab_gantt:
             g = view.sort_values("StartDate").head(MAX_ROWS).copy()
             g["Label"] = (g["Title"].astype(str) + " · " + g["Country"].astype(str)
                           + " · " + g["StartDate"].dt.strftime("%b %d"))
+
+            # Build friendly columns for hover so labels read clearly
+            g["Host Function"]               = g["Initiating Function"]
+            g["Host Sub-Function"]           = g["Initiating Sub-Function"]
+            g["Participating Function(s)"]   = g["Participating Function"].apply(fmt_part)
+            g["Participating Sub-Function(s)"] = g["Participating Sub-Function"].apply(fmt_part)
+            g["Note (display)"]              = g["Note"].apply(lambda n: "—" if str(n).lower() in ("nan", "none", "") else str(n))
+
             if len(view) > MAX_ROWS:
                 insight(f"Showing the first {MAX_ROWS} of {len(view)} activities (sorted by date). Use filters to narrow.")
             else:
-                insight(f"Showing {len(g)} activities. Hover any bar for full details.")
+                insight(f"Showing {len(g)} activities. Hover any bar to see Host, Participating, Attendees, Note and more.")
 
             fig = px.timeline(
                 g, x_start="StartDate", x_end="EndDate", y="Label",
                 color="Initiating Function", color_discrete_map=FUNCTION_COLORS,
                 hover_data={
-                    "Location": True, "Type": True, "Initiating Sub-Function": True,
-                    "Attendee Category": True, "Internal/External": True,
-                    "Status": True, "Weighting": True, "Note": True,
-                    "Label": False
+                    "Location": True,
+                    "Type": True,
+                    "Host Function": True,
+                    "Host Sub-Function": True,
+                    "Participating Function(s)": True,
+                    "Participating Sub-Function(s)": True,
+                    "Attendee Category": True,
+                    "Internal/External": True,
+                    "Status": True,
+                    "Weighting": True,
+                    "Note (display)": True,
+                    "Label": False,
+                    "Initiating Function": False,
+                    "Initiating Sub-Function": False,
                 },
+                labels={"Initiating Function": "Host Function"},
             )
             fig.update_yaxes(autorange="reversed")
             fig.update_traces(marker_line_color="white", marker_line_width=1)
@@ -615,13 +650,10 @@ with tab_gantt:
                     showline=True, linecolor="#D0D0D0",
                 ),
                 bargap=0.3,
+                legend_title_text="Host Function",
             )
-            # Alternating row shading for readability
             for i in range(0, len(g), 2):
-                fig.add_hrect(
-                    y0=i - 0.5, y1=i + 0.5,
-                    fillcolor="#FAFAFA", layer="below", line_width=0,
-                )
+                fig.add_hrect(y0=i - 0.5, y1=i + 0.5, fillcolor="#FAFAFA", layer="below", line_width=0)
             st.plotly_chart(fig, use_container_width=True)
     except Exception as e:
         st.error(f"Gantt could not render: {e}")
@@ -700,11 +732,11 @@ with tab_approvals:
                         st.caption(f"{row['Type']} · {row.get('Location','')} · "
                                    f"{pd.to_datetime(row['StartDate']).strftime('%b %d')} - "
                                    f"{pd.to_datetime(row['EndDate']).strftime('%b %d, %Y')}")
-                        st.caption(f"Host: {row['Initiating Function']} ({row['Initiating Sub-Function']}) · "
+                        st.caption(f"🏛 **Host:** {row['Initiating Function']} ({row['Initiating Sub-Function']}) · "
                                    f"Weighting: {row['Weighting']}")
-                        part = str(row.get("Participating Function", ""))
-                        if part and part.lower() != "nan":
-                            st.caption(f"Participating: {part}")
+                        part = fmt_part(row.get("Participating Function", ""))
+                        if part != "None":
+                            st.caption(f"👥 **Participating:** {part}")
                         if str(row.get("Note","")) != "nan" and row.get("Note"):
                             st.caption(f"📝 {row['Note']}")
                     key = make_key(row.get("Title", ""), row.get("StartDate", ""))
@@ -722,38 +754,44 @@ with tab_approvals:
         st.error(f"Approvals could not render: {e}")
 
 # ============================================================
-#  Tab: Submit (with clearer Participating Sub-Function picker)
+#  Tab: Submit (clear Host vs Participating language)
 # ============================================================
 with tab_submit:
-    st.subheader("Submit a new activity")
+    st.subheader("➕ Submit a new activity")
     try:
-        # Build sub-function list with parent function in brackets, grouped
         ALL_SUBS_LABELED = []
         for f in FUNCTIONS:
-            for s in SUB_FUNCTIONS[f]:
-                ALL_SUBS_LABELED.append(f"{s} ({f})")
+            for s in SUB_FUNCTIONSALL_SUBS_LABELED.append(f"{s} ({f})")
 
         with st.form("submit", clear_on_submit=True):
+            st.markdown("##### 📌 Basic details")
             col1, col2 = st.columns(2)
             title    = col1.text_input("Activity name")
             a_type   = col2.selectbox("Type", TYPES)
             start    = col1.date_input("Start date")
             end      = col2.date_input("End date")
             location = col1.text_input("Location (City, Country)", placeholder="e.g., Kigali, Rwanda")
-            func     = col2.selectbox("Initiating Function (Host)", FUNCTIONS)
-            subfunc  = col1.selectbox("Initiating Sub-Function", SUB_FUNCTIONS[func])
             attendee = col2.selectbox("Attendee Category", ATTENDEE_CATEGORIES)
 
-            st.markdown("##### Participating teams (optional)")
-            part_funcs = st.multiselect("Participating Function(s)",
-                                        [f for f in FUNCTIONS if f != func],
-                                        help="Other functions involved as participants, not hosts.")
-            part_subs_labeled = st.multiselect("Participating Sub-Function(s)",
-                                                ALL_SUBS_LABELED,
-                                                help="All 17 sub-functions across all functions are available here.")
-            # Strip the "(Function)" suffix before saving
+            st.markdown("##### 🏛 Host (the function LEADING this activity)")
+            colh1, colh2 = st.columns(2)
+            func     = colh1.selectbox("Host Function", FUNCTIONS,
+                                       help="The function owning and leading this activity.")
+            subfunc  = colh2.selectbox("Host Sub-Function", SUB_FUNCTIONS[func],
+                                       help="The specific sub-function under the Host Function.")
+
+            st.markdown("##### 👥 Participating (other functions JOINING - optional)")
+            st.caption("Use this for functions that are attending or contributing but **not** hosting.")
+            colp1, colp2 = st.columns(2)
+            part_funcs = colp1.multiselect("Participating Function(s)",
+                                            [f for f in FUNCTIONS if f != func],
+                                            help="Functions joining as participants, not as Host.")
+            part_subs_labeled = colp2.multiselect("Participating Sub-Function(s)",
+                                                   ALL_SUBS_LABELED,
+                                                   help="All 17 sub-functions are available here.")
             part_subs = [s.rsplit(" (", 1)[0] for s in part_subs_labeled]
 
+            st.markdown("##### 📋 Delivery & weighting")
             col3, col4 = st.columns(2)
             delivery  = col3.selectbox("Internal/External", DELIVERY_MODE)
             weighting = col4.selectbox("Weighting", WEIGHTING, index=1)
@@ -794,10 +832,12 @@ with tab_submit:
         if subs.empty:
             st.caption("No persisted submissions yet.")
         else:
-            st.dataframe(
-                subs[["Title", "Type", "Location", "Initiating Function", "StartDate", "Status", "Weighting"]].tail(10),
-                use_container_width=True, hide_index=True
-            )
+            disp = subs[["Title", "Type", "Location", "Initiating Function",
+                         "Participating Function", "StartDate", "Status", "Weighting"]].rename(columns={
+                "Initiating Function": "Host Function",
+                "Participating Function": "Participating Function(s)",
+            }).tail(10)
+            st.dataframe(disp, use_container_width=True, hide_index=True)
     except Exception as e:
         st.error(f"Submit form could not render: {e}")
 
@@ -809,14 +849,13 @@ with tab_upload:
     try:
         c1, c2 = st.columns([3, 1])
         c1.write("Upload an Excel file matching the template. Each row is validated against project lookups, "
-                 "then loaded into persistence as **Pending** activities, ready for the Approvals queue.")
+                 "then loaded into persistence. Note: **Initiating Function = Host Function** in the template.")
         template_buf = build_template_excel()
         c2.download_button("📥 Download template", data=template_buf,
                            file_name="Activity_Calendar_Template.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            use_container_width=True)
 
-        # Status of choice for uploaded rows
         upload_status = st.radio(
             "Load uploaded rows as:",
             ["Pending (requires approval)", "Approved (skip approval queue)"],
@@ -834,35 +873,26 @@ with tab_upload:
                 new_df = None
 
             if new_df is not None:
-                # Strip whitespace from string columns
                 for col in new_df.columns:
                     if new_df[col].dtype == "object":
                         new_df[col] = new_df[col].astype(str).str.strip()
 
-                # Validate every row
                 valid_rows, error_rows = [], []
                 for i, row in new_df.iterrows():
                     row_errors = []
-
-                    # Type
                     if str(row.get("Type", "")) not in TYPES:
                         row_errors.append(f"Invalid Type '{row.get('Type','')}'")
-                    # Function
                     func_val = str(row.get("Initiating Function", ""))
                     if func_val not in FUNCTIONS:
-                        row_errors.append(f"Invalid Initiating Function '{func_val}'")
+                        row_errors.append(f"Invalid Host Function '{func_val}'")
                     else:
-                        # Sub-Function must be allowed under the function
                         sub_val = str(row.get("Initiating Sub-Function", ""))
                         if sub_val not in SUB_FUNCTIONS.get(func_val, []):
-                            row_errors.append(f"Sub-Function '{sub_val}' not allowed under {func_val}")
-                    # Attendee Category
+                            row_errors.append(f"Host Sub-Function '{sub_val}' not allowed under {func_val}")
                     if str(row.get("Attendee Category", "")) not in ATTENDEE_CATEGORIES:
                         row_errors.append(f"Invalid Attendee Category '{row.get('Attendee Category','')}'")
-                    # Internal/External
                     if str(row.get("Internal/External", "")) not in DELIVERY_MODE:
                         row_errors.append(f"Invalid Internal/External '{row.get('Internal/External','')}'")
-                    # Dates
                     if pd.isna(row.get("StartDate")) or pd.isna(row.get("EndDate")):
                         row_errors.append("Missing StartDate or EndDate")
                     else:
@@ -873,26 +903,21 @@ with tab_upload:
                                 row_errors.append("EndDate is before StartDate")
                         except Exception:
                             row_errors.append("Invalid date format")
-                    # Title
                     if not str(row.get("Title", "")).strip() or str(row.get("Title","")).strip().lower() == "nan":
                         row_errors.append("Missing Title")
-                    # Location
                     if not str(row.get("Location", "")).strip() or str(row.get("Location","")).strip().lower() == "nan":
                         row_errors.append("Missing Location")
 
                     if row_errors:
                         error_rows.append({
-                            "Row": i + 3,
-                            "Title": row.get("Title", ""),
+                            "Row": i + 3, "Title": row.get("Title", ""),
                             "Errors": "; ".join(row_errors),
                         })
                     else:
                         valid_rows.append(row)
 
-                # Summary banner
                 total_rows = len(new_df)
-                vcount = len(valid_rows)
-                ecount = len(error_rows)
+                vcount = len(valid_rows); ecount = len(error_rows)
                 if ecount == 0:
                     st.success(f"✅ All {total_rows} rows validated successfully.")
                 else:
@@ -900,7 +925,6 @@ with tab_upload:
                     with st.expander(f"See {ecount} error(s) line-by-line", expanded=True):
                         st.dataframe(pd.DataFrame(error_rows), use_container_width=True, hide_index=True)
 
-                # Preview valid rows
                 if valid_rows:
                     with st.expander(f"Preview {vcount} valid rows", expanded=False):
                         st.dataframe(pd.DataFrame(valid_rows), use_container_width=True, hide_index=True)
@@ -911,25 +935,18 @@ with tab_upload:
                     if st.button(btn_label, type="primary"):
                         loaded = 0
                         for row in valid_rows:
-                            country = ""
                             loc = str(row.get("Location", ""))
-                            if ", " in loc:
-                                country = loc.split(", ")[-1].strip()
-                            else:
-                                country = loc.strip()
+                            country = loc.split(", ")[-1].strip() if ", " in loc else loc.strip()
                             region = COUNTRY_TO_REGION.get(country, "Other")
-
                             sd = pd.to_datetime(row["StartDate"])
                             ed = pd.to_datetime(row["EndDate"])
-
                             row_dict = {
                                 "StartDate": sd.strftime("%Y-%m-%d"),
                                 "EndDate": ed.strftime("%Y-%m-%d"),
                                 "Type": row.get("Type", ""),
                                 "Title": str(row.get("Title", "")).strip(),
                                 "Location": str(row.get("Location", "")).strip(),
-                                "Country": country,
-                                "Region": region,
+                                "Country": country, "Region": region,
                                 "Initiating Function": row.get("Initiating Function", ""),
                                 "Initiating Sub-Function": row.get("Initiating Sub-Function", ""),
                                 "Attendee Category": row.get("Attendee Category", ""),
@@ -944,9 +961,8 @@ with tab_upload:
                             }
                             save_submission(row_dict)
                             loaded += 1
-
                         log_change("Mass upload", f"Loaded {loaded} rows as {target_status}")
-                        st.success(f"✅ Loaded {loaded} rows into persistence as {target_status}. "
+                        st.success(f"✅ Loaded {loaded} rows as {target_status}. "
                                    f"{'Check the Approvals tab to review them.' if target_status == 'Pending' else 'They are now in the calendar.'}")
                         st.rerun()
     except Exception as e:
