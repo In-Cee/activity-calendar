@@ -802,23 +802,153 @@ with tab_submit:
         st.error(f"Submit form could not render: {e}")
 
 # ============================================================
-#  Tab: Mass Upload
+#  Tab: Mass Upload (with validation + persistence)
 # ============================================================
 with tab_upload:
-    st.subheader("Mass upload")
+    st.subheader("📤 Mass upload")
     try:
         c1, c2 = st.columns([3, 1])
-        c1.write("Upload an Excel file matching the template.")
+        c1.write("Upload an Excel file matching the template. Each row is validated against project lookups, "
+                 "then loaded into persistence as **Pending** activities, ready for the Approvals queue.")
         template_buf = build_template_excel()
         c2.download_button("📥 Download template", data=template_buf,
                            file_name="Activity_Calendar_Template.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            use_container_width=True)
+
+        # Status of choice for uploaded rows
+        upload_status = st.radio(
+            "Load uploaded rows as:",
+            ["Pending (requires approval)", "Approved (skip approval queue)"],
+            horizontal=True,
+            help="Pending rows appear in the Approvals tab. Approved rows go directly into the calendar."
+        )
+        target_status = "Pending" if upload_status.startswith("Pending") else "Approved"
+
         upload = st.file_uploader("Choose Excel file", type=["xlsx"])
         if upload:
-            new_df = pd.read_excel(upload, sheet_name="Activities", header=1)
-            st.success(f"Parsed {len(new_df)} rows. Use the Submit tab to add individual rows for now, or "
-                       f"contact admin to bulk-load into persistence.")
+            try:
+                new_df = pd.read_excel(upload, sheet_name="Activities", header=1)
+            except Exception as parse_err:
+                st.error(f"Could not parse Excel file: {parse_err}")
+                new_df = None
+
+            if new_df is not None:
+                # Strip whitespace from string columns
+                for col in new_df.columns:
+                    if new_df[col].dtype == "object":
+                        new_df[col] = new_df[col].astype(str).str.strip()
+
+                # Validate every row
+                valid_rows, error_rows = [], []
+                for i, row in new_df.iterrows():
+                    row_errors = []
+
+                    # Type
+                    if str(row.get("Type", "")) not in TYPES:
+                        row_errors.append(f"Invalid Type '{row.get('Type','')}'")
+                    # Function
+                    func_val = str(row.get("Initiating Function", ""))
+                    if func_val not in FUNCTIONS:
+                        row_errors.append(f"Invalid Initiating Function '{func_val}'")
+                    else:
+                        # Sub-Function must be allowed under the function
+                        sub_val = str(row.get("Initiating Sub-Function", ""))
+                        if sub_val not in SUB_FUNCTIONS.get(func_val, []):
+                            row_errors.append(f"Sub-Function '{sub_val}' not allowed under {func_val}")
+                    # Attendee Category
+                    if str(row.get("Attendee Category", "")) not in ATTENDEE_CATEGORIES:
+                        row_errors.append(f"Invalid Attendee Category '{row.get('Attendee Category','')}'")
+                    # Internal/External
+                    if str(row.get("Internal/External", "")) not in DELIVERY_MODE:
+                        row_errors.append(f"Invalid Internal/External '{row.get('Internal/External','')}'")
+                    # Dates
+                    if pd.isna(row.get("StartDate")) or pd.isna(row.get("EndDate")):
+                        row_errors.append("Missing StartDate or EndDate")
+                    else:
+                        try:
+                            sd = pd.to_datetime(row["StartDate"])
+                            ed = pd.to_datetime(row["EndDate"])
+                            if ed < sd:
+                                row_errors.append("EndDate is before StartDate")
+                        except Exception:
+                            row_errors.append("Invalid date format")
+                    # Title
+                    if not str(row.get("Title", "")).strip() or str(row.get("Title","")).strip().lower() == "nan":
+                        row_errors.append("Missing Title")
+                    # Location
+                    if not str(row.get("Location", "")).strip() or str(row.get("Location","")).strip().lower() == "nan":
+                        row_errors.append("Missing Location")
+
+                    if row_errors:
+                        error_rows.append({
+                            "Row": i + 3,
+                            "Title": row.get("Title", ""),
+                            "Errors": "; ".join(row_errors),
+                        })
+                    else:
+                        valid_rows.append(row)
+
+                # Summary banner
+                total_rows = len(new_df)
+                vcount = len(valid_rows)
+                ecount = len(error_rows)
+                if ecount == 0:
+                    st.success(f"✅ All {total_rows} rows validated successfully.")
+                else:
+                    st.warning(f"📋 Parsed {total_rows} rows: ✅ {vcount} valid · ❌ {ecount} with errors.")
+                    with st.expander(f"See {ecount} error(s) line-by-line", expanded=True):
+                        st.dataframe(pd.DataFrame(error_rows), use_container_width=True, hide_index=True)
+
+                # Preview valid rows
+                if valid_rows:
+                    with st.expander(f"Preview {vcount} valid rows", expanded=False):
+                        st.dataframe(pd.DataFrame(valid_rows), use_container_width=True, hide_index=True)
+
+                    btn_label = (f"📥 Load {vcount} valid row(s) as {target_status}"
+                                 if ecount == 0
+                                 else f"📥 Load {vcount} valid rows as {target_status} (skip {ecount} errors)")
+                    if st.button(btn_label, type="primary"):
+                        loaded = 0
+                        for row in valid_rows:
+                            country = ""
+                            loc = str(row.get("Location", ""))
+                            if ", " in loc:
+                                country = loc.split(", ")[-1].strip()
+                            else:
+                                country = loc.strip()
+                            region = COUNTRY_TO_REGION.get(country, "Other")
+
+                            sd = pd.to_datetime(row["StartDate"])
+                            ed = pd.to_datetime(row["EndDate"])
+
+                            row_dict = {
+                                "StartDate": sd.strftime("%Y-%m-%d"),
+                                "EndDate": ed.strftime("%Y-%m-%d"),
+                                "Type": row.get("Type", ""),
+                                "Title": str(row.get("Title", "")).strip(),
+                                "Location": str(row.get("Location", "")).strip(),
+                                "Country": country,
+                                "Region": region,
+                                "Initiating Function": row.get("Initiating Function", ""),
+                                "Initiating Sub-Function": row.get("Initiating Sub-Function", ""),
+                                "Attendee Category": row.get("Attendee Category", ""),
+                                "Participating Function": str(row.get("Participating Function", "")) if str(row.get("Participating Function","")).lower() != "nan" else "",
+                                "Participating Sub-Function": str(row.get("Participating Sub-Function", "")) if str(row.get("Participating Sub-Function","")).lower() != "nan" else "",
+                                "Internal/External": row.get("Internal/External", ""),
+                                "Month (Auto/Manual)": sd.strftime("%b"),
+                                "Year (Auto/Manual)": sd.year,
+                                "Note": str(row.get("Note", "")) if str(row.get("Note","")).lower() != "nan" else "",
+                                "Status": target_status,
+                                "Weighting": row.get("Weighting", "Medium") if str(row.get("Weighting","")).lower() != "nan" else "Medium",
+                            }
+                            save_submission(row_dict)
+                            loaded += 1
+
+                        log_change("Mass upload", f"Loaded {loaded} rows as {target_status}")
+                        st.success(f"✅ Loaded {loaded} rows into persistence as {target_status}. "
+                                   f"{'Check the Approvals tab to review them.' if target_status == 'Pending' else 'They are now in the calendar.'}")
+                        st.rerun()
     except Exception as e:
         st.error(f"Mass Upload could not render: {e}")
 
